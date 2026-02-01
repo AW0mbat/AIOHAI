@@ -624,7 +624,10 @@ class TestSmartHomeStackDetector(unittest.TestCase):
 # =============================================================================
 
 class TestFrameworkLoading(unittest.TestCase):
-    """Test that _load_frameworks discovers and appends framework files."""
+    """Test that _load_frameworks discovers and appends framework files.
+    
+    M-6 FIX: Only files in ALLOWED_FRAMEWORK_NAMES are loaded now.
+    """
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -635,7 +638,7 @@ class TestFrameworkLoading(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_framework_glob_pattern(self):
-        """Files matching *_framework_*.md should be discovered."""
+        """Files matching *_framework_*.md should be discovered by glob."""
         policy_dir = self.tmp / "policy"
         (policy_dir / "home_assistant_framework_v1.md").write_text("# HA Framework")
         (policy_dir / "zigbee_framework_v1.md").write_text("# Zigbee Framework")
@@ -648,23 +651,38 @@ class TestFrameworkLoading(unittest.TestCase):
         self.assertNotIn("not_a_framework.md", names)
 
     def test_framework_content_appended_to_policy(self):
-        """Framework content should appear after the base policy."""
+        """Allowlisted framework content should appear after the base policy."""
         policy_dir = self.tmp / "policy"
-        fw = policy_dir / "test_framework_v1.md"
+        # M-6 FIX: Use an allowlisted filename so it actually gets loaded
+        fw = policy_dir / "ha_framework_v3.md"
         fw.write_text("FRAMEWORK_SENTINEL_VALUE_12345")
 
-        # Simulate _load_frameworks
         from proxy.aiohai_proxy import UnifiedSecureProxy
-        # We'll test the method directly by creating a minimal mock
         proxy_mock = MagicMock()
         proxy_mock.config = self.cfg
         proxy_mock.logger = self.logger
 
-        # Call the actual method
         result = UnifiedSecureProxy._load_frameworks(proxy_mock, "BASE_POLICY")
         self.assertTrue(result.startswith("BASE_POLICY"))
         self.assertIn("FRAMEWORK_SENTINEL_VALUE_12345", result)
         self.assertIn("FRAMEWORK:", result)
+
+    def test_non_allowlisted_framework_rejected(self):
+        """M-6 FIX: Files not in ALLOWED_FRAMEWORK_NAMES must be rejected."""
+        policy_dir = self.tmp / "policy"
+        # This matches the glob but is NOT in the allowlist
+        rogue = policy_dir / "evil_framework_inject.md"
+        rogue.write_text("INJECTED_PROMPT_SHOULD_NOT_APPEAR")
+
+        from proxy.aiohai_proxy import UnifiedSecureProxy
+        proxy_mock = MagicMock()
+        proxy_mock.config = self.cfg
+        proxy_mock.logger = self.logger
+
+        result = UnifiedSecureProxy._load_frameworks(proxy_mock, "BASE_POLICY")
+        self.assertNotIn("INJECTED_PROMPT_SHOULD_NOT_APPEAR", result)
+        # Should log a rejection
+        proxy_mock.logger.log_event.assert_called()
 
     def test_no_frameworks_returns_unchanged(self):
         """With no framework files, policy should be unchanged."""

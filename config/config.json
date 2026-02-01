@@ -4,7 +4,7 @@
     "general": {
         "install_path": "C:\\AIOHAI",
         "log_level": "FULL",
-        "version": "3.0.0"
+        "version": "3.0.1"
     },
     "ollama": {
         "host": "127.0.0.1",

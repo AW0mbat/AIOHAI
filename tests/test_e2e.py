@@ -232,10 +232,14 @@ class TestInputSanitizationPipeline:
 class TestApprovalEndToEnd:
     """Simulate actions being created, queued, and approved/rejected."""
 
+    # H-5 FIX: session_id is now required
+    TEST_SESSION = "e2e-test-session-0001"
+
     def test_action_to_approval_to_confirm(self, config, mock_logger):
         mgr = ApprovalManager(config, mock_logger)
         # Create an approval request (simulating what happens after action parsing)
-        approval_id = mgr.create_request('WRITE', '/tmp/test.yaml', 'content: test')
+        approval_id = mgr.create_request('WRITE', '/tmp/test.yaml', 'content: test',
+                                         session_id=self.TEST_SESSION)
         assert approval_id is not None
 
         # Verify it's pending
@@ -244,7 +248,7 @@ class TestApprovalEndToEnd:
         assert pending[0]['id'] == approval_id
 
         # Approve it
-        result = mgr.approve(approval_id)
+        result = mgr.approve(approval_id, session_id=self.TEST_SESSION)
         assert result is True or result is not None
 
         # Should no longer be pending
@@ -253,7 +257,8 @@ class TestApprovalEndToEnd:
 
     def test_action_to_approval_to_reject(self, config, mock_logger):
         mgr = ApprovalManager(config, mock_logger)
-        approval_id = mgr.create_request('DELETE', '/tmp/old.log', '')
+        approval_id = mgr.create_request('DELETE', '/tmp/old.log', '',
+                                         session_id=self.TEST_SESSION)
         result = mgr.reject(approval_id)
         assert result is True or result is not None
         assert len(mgr.get_pending()) == 0
@@ -262,9 +267,11 @@ class TestApprovalEndToEnd:
         mgr = ApprovalManager(config, mock_logger)
         # Create max_pending_approvals + 1 requests
         for i in range(config.max_pending_approvals):
-            mgr.create_request('COMMAND', f'echo {i}', '')
+            mgr.create_request('COMMAND', f'echo {i}', '',
+                               session_id=self.TEST_SESSION)
         # The next one should fail (rate limited)
-        overflow = mgr.create_request('COMMAND', 'echo overflow', '')
+        overflow = mgr.create_request('COMMAND', 'echo overflow', '',
+                                      session_id=self.TEST_SESSION)
         assert overflow is None
 
 
@@ -384,11 +391,12 @@ class TestFullPipelineSimulation:
 
         # 4. Create approval
         mgr = ApprovalManager(config, mock_logger)
-        aid = mgr.create_request(actions[0]['type'], actions[0]['target'], actions[0]['content'])
+        aid = mgr.create_request(actions[0]['type'], actions[0]['target'], actions[0]['content'],
+                                 session_id=mock_logger.session_id)
         assert aid is not None
 
         # 5. Approve
-        assert mgr.approve(aid)
+        assert mgr.approve(aid, session_id=mock_logger.session_id)
 
     def test_blocked_path_pipeline(self, config, mock_logger, mock_alerts):
         """READ of SSH key should: parse → validate → HARD BLOCK (no approval)."""
@@ -416,7 +424,8 @@ class TestFullPipelineSimulation:
 
         # Should be able to create an approval (it's allowed, just tier-3)
         mgr = ApprovalManager(config, mock_logger)
-        aid = mgr.create_request(actions[0]['type'], actions[0]['target'], actions[0]['content'])
+        aid = mgr.create_request(actions[0]['type'], actions[0]['target'], actions[0]['content'],
+                                 session_id=mock_logger.session_id)
         assert aid is not None
 
     def test_blocked_command_pipeline(self, config, mock_logger, mock_alerts):

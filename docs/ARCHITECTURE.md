@@ -1,4 +1,4 @@
-# AIOHAI v3.0 — Architecture Documentation
+# AIOHAI v3.0.1 — Architecture Documentation
 
 ## Overview
 
@@ -8,7 +8,7 @@ The system is designed for a home/small-office deployment where a local LLM agen
 
 ```
 ┌─────────────┐     ┌──────────────────────────┐     ┌────────────┐
-│  Open WebUI  │────▶│   AIOHAI Proxy v3.0   │────▶│   Ollama   │
+│  Open WebUI  │────▶│  AIOHAI Proxy v3.0.1  │────▶│   Ollama   │
 │  (Browser)   │◀────│   localhost:11435         │◀────│   :11434   │
 └─────────────┘     └────────────┬─────────────┘     └────────────┘
                                  │
@@ -25,7 +25,7 @@ The system is designed for a home/small-office deployment where a local LLM agen
 
 ### Core Proxy (`proxy/aiohai_proxy.py`)
 
-This is the main file (~2,875 lines). It contains all proxy logic in a single file for deployment simplicity.
+This is the main file (~4,580 lines). It contains all proxy logic in a single file for deployment simplicity.
 
 | Class | Purpose | Key Methods |
 |-------|---------|-------------|
@@ -40,6 +40,12 @@ This is the main file (~2,875 lines). It contains all proxy logic in a single fi
 | `SecureExecutor` | Sandboxed file/command execution with static analysis, resource limits, and multi-stage detection | `read_file()`, `write_file()`, `execute_command()`, `delete_file()` |
 | `ApprovalManager` | Human-in-the-loop approval queue with rate limiting and expiry | `create_request()`, `approve()`, `reject()` |
 | `ActionParser` | Parses `<ACTION>` blocks from LLM responses | `parse()`, `strip_actions()` |
+| `OllamaCircuitBreaker` | Prevents thread exhaustion when Ollama is down (opens after 3 failures for 60s) | `can_request()`, `record_success()`, `record_failure()` |
+| `LocalServiceRegistry` | Allowlist of queryable local services with port verification on registration | `register()`, `lookup()`, `load_from_config()` |
+| `LocalAPIQueryExecutor` | Executes queries against registered services with PII protection and transparency tracking | `execute()` |
+| `DocumentContentScanner` | Scans Office documents for PII, credentials, and dangerous formulas | `scan()`, `get_scan_summary()` |
+| `MacroBlocker` | Blocks creation/modification of macro-enabled Office formats | `check_extension()`, `scan_content_for_vba()` |
+| `MetadataSanitizer` | Strips author, revision, and tracking metadata from documents | `sanitize()` |
 | `UnifiedProxyHandler` | HTTP request handler (extends `BaseHTTPRequestHandler`) | `do_POST()`, `_handle_chat()` |
 | `UnifiedSecureProxy` | Main orchestrator: wires components, runs 8-step startup | `start()`, `__init__()` |
 
@@ -54,10 +60,12 @@ This is the main file (~2,875 lines). It contains all proxy logic in a single fi
 | `DualLLMVerifier` | Sends actions to a second LLM for independent safety assessment |
 | `CredentialRedactor` | Strips API keys, passwords, private keys, connection strings from previews |
 | `SensitiveOperationDetector` | Flags operations on sensitive targets (financial, personal) |
-| `SessionTransparencyTracker` | Records all actions for the `REPORT` command |
+| `SessionTransparencyTracker` | Records all actions (including API queries) for the `REPORT` command |
 | `SmartHomeConfigAnalyzer` | Validates Home Assistant / Frigate YAML configs |
-| `SecureDockerComposeGenerator` | Generates hardened docker-compose files |
-| `FamilyAccessControl` | Role-based access for multi-user households |
+| `HomeAssistantNotificationBridge` | Forwards security alerts to Home Assistant dashboard |
+| `SmartHomeStackDetector` | Auto-discovers Docker-based smart home stack |
+| `OfficeStackDetector` | Detects installed Office components |
+| `DocumentAuditLogger` | Maintains a separate audit trail for document operations |
 
 ### FIDO2/WebAuthn (`security/fido2_approval.py`)
 
@@ -259,33 +267,39 @@ Based on analysis of real-world AI agent security breaches:
 ## File Layout
 
 ```
-aiohai_v3.0/
+AIOHAI/
 ├── proxy/
-│   └── aiohai_proxy.py   # Main proxy (all-in-one)
+│   └── aiohai_proxy.py              # Main proxy (~4,580 lines)
 ├── security/
 │   ├── __init__.py
-│   ├── security_components.py        # Static analysis, PII, credentials, etc.
-│   ├── fido2_approval.py             # FIDO2/WebAuthn server + client
-│   └── hsm_integration.py            # Nitrokey HSM PKCS#11 interface
+│   ├── security_components.py       # Analysis engines (~2,280 lines)
+│   ├── fido2_approval.py            # FIDO2/WebAuthn server & client (~1,290 lines)
+│   └── hsm_integration.py           # Nitrokey HSM PKCS#11 interface
 ├── policy/
 │   └── aiohai_security_policy_v3.0.md  # Security policy injected into LLM
 ├── config/
-│   └── config.json                   # Reference configuration
+│   └── config.json                  # Reference configuration
 ├── tools/
-│   ├── aiohai_cli.py              # Management CLI
-│   ├── register_devices.py           # FIDO2 device registration wizard
-│   └── hsm_setup.py                  # HSM initialization tool
+│   ├── aiohai_cli.py                # Management CLI
+│   ├── register_devices.py          # FIDO2 device registration wizard
+│   └── hsm_setup.py                 # HSM initialization tool
 ├── tests/
-│   ├── conftest.py                   # Shared fixtures
-│   ├── test_security.py              # 95 security unit tests
-│   ├── test_startup.py               # 16 integration tests
-│   └── test_e2e.py                   # 37 end-to-end pipeline tests
+│   ├── conftest.py                  # Shared fixtures
+│   ├── test_security.py             # Security unit tests
+│   ├── test_startup.py              # Integration tests
+│   ├── test_e2e.py                  # End-to-end pipeline tests
+│   ├── test_ha_framework.py         # Smart home framework tests
+│   └── test_office_framework.py     # Office framework tests
 ├── docs/
-│   └── ARCHITECTURE.md               # This file
+│   └── ARCHITECTURE.md              # This file
 ├── web/
+│   ├── __init__.py
 │   └── templates/
+│       ├── index.html               # FIDO2 approval UI
+│       └── register.html            # Device registration UI
 ├── setup/
-│   └── Setup.ps1                     # Windows installer script
+│   └── Setup.ps1                    # Windows installer script
+├── README.md
 └── requirements.txt
 ```
 
@@ -298,3 +312,4 @@ aiohai_v3.0/
 | 2026-01-31 | Phase 2 | SSL verification on FIDO2 client, integrity lockdown, HSM health monitor, fail-secure defaults, approval retry/persistence |
 | 2026-01-31 | Phase 3 | Removed 879 lines dead code, extracted constants, decomposed long functions, added type hints, fixed config duplication |
 | 2026-01-31 | Phase 4 | Test suite (150+ cases), integration tests, this architecture document |
+| 2026-02-01 | v3.0.1 | 8 security fixes (H-4, H-5, M-6–M-9, L-6–L-8), AlertManager thread-death bug fix, 4 optimizations, README |

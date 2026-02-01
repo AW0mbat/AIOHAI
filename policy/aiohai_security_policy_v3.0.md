@@ -2,8 +2,8 @@
 
 ## Security Audit Revision
 
-**Version:** 3.0.0
-**Date:** January 2026
+**Version:** 3.0.1
+**Date:** February 2026
 **Classification:** SECURITY CRITICAL
 
 This revision incorporates all findings from the comprehensive security audit:

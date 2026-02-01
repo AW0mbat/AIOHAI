@@ -177,7 +177,7 @@ function Install-FirewallRules {
 }
 
 function Start-SecureProxy {
-    Write-Status "Starting AIOHAI Proxy v3.0..." "INFO"
+    Write-Status "Starting AIOHAI Proxy v3.0.1..." "INFO"
     
     # Use unified proxy v2.3 (only version)
     $proxyScript = Join-Path $InstallPath "proxy\aiohai_proxy.py"

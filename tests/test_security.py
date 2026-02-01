@@ -754,18 +754,23 @@ class TestIntegrityVerifier:
 class TestApprovalFlow:
     """Tests for the approval system including rate limiting."""
 
+    # H-5 FIX: session_id is now required for create_request() and approve()
+    TEST_SESSION = "test-session-abcd1234"
+
     def test_create_and_approve(self, approval_mgr):
         """Basic create → approve flow."""
-        aid = approval_mgr.create_request("COMMAND", "mkdir test", "")
+        aid = approval_mgr.create_request("COMMAND", "mkdir test", "",
+                                          session_id=self.TEST_SESSION)
         assert aid is not None
         assert len(aid) > 0
         
-        result = approval_mgr.approve(aid)
+        result = approval_mgr.approve(aid, session_id=self.TEST_SESSION)
         assert result is not None
 
     def test_create_and_reject(self, approval_mgr):
         """Basic create → reject flow."""
-        aid = approval_mgr.create_request("DELETE", "/tmp/file", "")
+        aid = approval_mgr.create_request("DELETE", "/tmp/file", "",
+                                          session_id=self.TEST_SESSION)
         result = approval_mgr.reject(aid)
         assert result is not None
 
@@ -775,28 +780,37 @@ class TestApprovalFlow:
         max_pending = config.max_concurrent_actions * 2  # 10
         
         for i in range(max_pending):
-            approval_mgr.create_request("COMMAND", f"cmd_{i}", "")
+            approval_mgr.create_request("COMMAND", f"cmd_{i}", "",
+                                        session_id=self.TEST_SESSION)
         
         # Next one should raise or be blocked
         with pytest.raises(Exception):
-            approval_mgr.create_request("COMMAND", "one_too_many", "")
+            approval_mgr.create_request("COMMAND", "one_too_many", "",
+                                        session_id=self.TEST_SESSION)
 
     def test_approval_ids_are_unique(self, approval_mgr):
         """Every approval ID must be unique."""
         ids = set()
         for i in range(5):
-            aid = approval_mgr.create_request("READ", f"file_{i}.txt", "")
+            aid = approval_mgr.create_request("READ", f"file_{i}.txt", "",
+                                              session_id=self.TEST_SESSION)
             assert aid not in ids
             ids.add(aid)
-            approval_mgr.approve(aid)  # Clear it for next
+            approval_mgr.approve(aid, session_id=self.TEST_SESSION)  # Clear it for next
 
     def test_double_approve_fails(self, approval_mgr):
         """Approving an already-approved request must fail or return the same result."""
-        aid = approval_mgr.create_request("COMMAND", "test", "")
-        approval_mgr.approve(aid)
+        aid = approval_mgr.create_request("COMMAND", "test", "",
+                                          session_id=self.TEST_SESSION)
+        approval_mgr.approve(aid, session_id=self.TEST_SESSION)
         # Second approve should not create a new execution
-        result = approval_mgr.approve(aid)
+        result = approval_mgr.approve(aid, session_id=self.TEST_SESSION)
         # Implementation-dependent: may return None, raise, or return same
+
+    def test_missing_session_id_raises(self, approval_mgr):
+        """H-5: create_request without session_id must raise SecurityError."""
+        with pytest.raises(SecurityError):
+            approval_mgr.create_request("COMMAND", "test", "", session_id="")
 
 
 # =========================================================================

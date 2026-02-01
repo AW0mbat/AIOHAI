@@ -31,7 +31,7 @@ Usage:
   python aiohai_cli.py certs generate         # Regenerate TLS certificates
   python aiohai_cli.py doctor                 # Full diagnostic check
 
-Version: 3.0.0
+Version: 3.0.1
 """
 
 import os
