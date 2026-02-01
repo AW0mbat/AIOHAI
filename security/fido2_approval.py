@@ -228,6 +228,16 @@ class OperationClassifier:
         r'(?i)health', r'(?i)identity', r'(?i)passport', r'(?i)ssn',
     ]
 
+    # Office document patterns that escalate to TIER_3 (sensitive content context)
+    SENSITIVE_DOC_PATTERNS = [
+        r'(?i)payroll', r'(?i)salary', r'(?i)employee', r'(?i)personnel',
+        r'(?i)hr[_\-\s]', r'(?i)human.?resources', r'(?i)performance.?review',
+        r'(?i)medical', r'(?i)health', r'(?i)insurance', r'(?i)benefits',
+        r'(?i)tax', r'(?i)financial', r'(?i)budget', r'(?i)invoice',
+        r'(?i)contract', r'(?i)legal', r'(?i)nda', r'(?i)confidential',
+        r'(?i)customer.?list', r'(?i)client.?data', r'(?i)account',
+    ]
+
     @classmethod
     def classify(cls, action_type: str, target: str = "",
                  content: str = "") -> ApprovalTier:
@@ -240,6 +250,15 @@ class OperationClassifier:
             for pattern in cls.SENSITIVE_PATTERNS:
                 if re.search(pattern, target):
                     return ApprovalTier.TIER_3
+        
+        # DOCUMENT_OP: minimum TIER_2, escalate to TIER_3 for sensitive doc names
+        if action_type == 'DOCUMENT_OP':
+            if target:
+                for pattern in cls.SENSITIVE_DOC_PATTERNS:
+                    if re.search(pattern, target):
+                        return ApprovalTier.TIER_3
+            return ApprovalTier.TIER_2
+        
         if action_type in ('WRITE', 'COMMAND'):
             return ApprovalTier.TIER_2
         return ApprovalTier.TIER_1
@@ -432,7 +451,20 @@ class FIDO2ApprovalServer:
 
     def _create_flask_app(self) -> 'Flask':
         app = Flask(__name__)
-        CORS(app, resources={r"/api/*": {"origins": "*"}, r"/auth/*": {"origins": "*"}})
+        # SECURITY FIX (F-004): Restrict CORS to localhost/LAN origins
+        allowed_origins = [
+            "https://localhost:*", "http://localhost:*",
+            "https://127.0.0.1:*", "http://127.0.0.1:*",
+            "https://[::1]:*", "http://[::1]:*",
+        ]
+        # Allow user-configured additional origins (e.g. LAN phone IP)
+        extra_origins = self.config.get('cors_allowed_origins', [])
+        if extra_origins:
+            allowed_origins.extend(extra_origins)
+        CORS(app, resources={
+            r"/api/*": {"origins": allowed_origins},
+            r"/auth/*": {"origins": allowed_origins},
+        })
 
         # === WEB ROUTES ===
 

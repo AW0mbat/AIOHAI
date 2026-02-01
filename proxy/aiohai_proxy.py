@@ -58,7 +58,7 @@ import math
 import socket
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Any, Set
+from typing import Optional, Dict, List, Tuple, Set
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
@@ -73,9 +73,10 @@ try:
     from security.security_components import (
         StaticSecurityAnalyzer, PIIProtector, ResourceLimiter,
         DualLLMVerifier, MultiStageDetector, ResourceLimitExceeded,
-        Severity, Verdict, SmartHomeConfigAnalyzer, SecureDockerComposeGenerator,
+        Severity, Verdict, SmartHomeConfigAnalyzer,
         CredentialRedactor, SensitiveOperationDetector, SessionTransparencyTracker,
-        FamilyAccessControl, FamilyMember,
+        HomeAssistantNotificationBridge, SmartHomeStackDetector,
+        OfficeStackDetector, DocumentAuditLogger,
         FINANCIAL_PATH_PATTERNS, CLIPBOARD_BLOCK_PATTERNS, TRUSTED_DOCKER_REGISTRIES
     )
     SECURITY_COMPONENTS_AVAILABLE = True
@@ -145,6 +146,8 @@ class ActionType(Enum):
     COMMAND_EXEC = auto()
     DIRECTORY_LIST = auto()
     NETWORK_REQUEST = auto()
+    LOCAL_API_QUERY = auto()
+    DOCUMENT_OP = auto()
 
 
 class AlertSeverity(Enum):
@@ -168,12 +171,6 @@ class SecurityError(Exception):
     pass
 
 class NetworkSecurityError(SecurityError):
-    pass
-
-class PathSecurityError(SecurityError):
-    pass
-
-class CommandSecurityError(SecurityError):
     pass
 
 
@@ -226,6 +223,20 @@ BLOCKED_PATH_PATTERNS = [
     # Persistence locations (attack infrastructure)
     r'(?i).*\\start\s*menu\\programs\\startup.*',
     r'(?i).*\\appdata\\roaming\\microsoft\\windows\\start\s*menu.*',
+    # Office persistence / template directories (macro backdoor vectors)
+    r'(?i).*\\appdata\\roaming\\microsoft\\templates.*',
+    r'(?i).*\\appdata\\roaming\\microsoft\\excel\\xlstart.*',
+    r'(?i).*\\appdata\\roaming\\microsoft\\word\\startup.*',
+    r'(?i).*\\appdata\\roaming\\microsoft\\addins.*',
+    r'(?i).*normal\.dotm$',
+    r'(?i).*personal\.xlsb$',
+    # Outlook data stores (email credential/session material)
+    r'(?i).*\.pst$',
+    r'(?i).*\.ost$',
+    # Office MRU tracking (information disclosure)
+    r'(?i).*\\appdata\\roaming\\microsoft\\office\\recent.*',
+    # COM add-in directories (persistence)
+    r'(?i).*\\appdata\\local\\microsoft\\office.*\\addins.*',
 ]
 
 # TIER 3 PATHS: Accessible ONLY via FIDO2 hardware approval (physical key tap
@@ -363,14 +374,47 @@ SAFE_ENV_VARS = {
 
 # Whitelisted executables
 WHITELISTED_EXECUTABLES = {
-    'cmd.exe', 'powershell.exe', 'pwsh.exe',
+    'cmd.exe',
+    # SECURITY FIX (F-007/F-008): powershell.exe, pwsh.exe, and explorer.exe removed.
+    # powershell.exe can bypass command pattern blocking with creative encoding.
+    # explorer.exe can open URLs (bypassing network interceptor) and launch arbitrary files.
     'python.exe', 'python3.exe', 'pip.exe',
     'git.exe', 'node.exe', 'npm.cmd', 'code.cmd',
-    'notepad.exe', 'explorer.exe',
+    'notepad.exe',
+    'docker', 'docker.exe', 'docker-compose', 'docker-compose.exe',
     'dir', 'echo', 'type', 'cd', 'cls', 'copy', 'move', 'del',
     'mkdir', 'rmdir', 'ren', 'find', 'findstr', 'sort', 'more', 'tree',
     'ipconfig', 'ping', 'netstat', 'hostname', 'whoami',
     'systeminfo', 'tasklist', 'date', 'time', 'ver', 'set', 'where',
+}
+
+# Docker command tier classification
+DOCKER_COMMAND_TIERS = {
+    'standard': {
+        'ps', 'images', 'inspect', 'logs', 'stats', 'top', 'port',
+        'version', 'info', 'network ls', 'network inspect',
+        'volume ls', 'volume inspect', 'compose ps', 'compose logs',
+        'compose config', 'compose ls',
+    },
+    'elevated': {
+        'start', 'stop', 'restart', 'pause', 'unpause',
+        'pull', 'create', 'run', 'exec',
+        'compose up', 'compose down', 'compose start', 'compose stop',
+        'compose restart', 'compose pull', 'compose build',
+        'compose exec', 'compose run', 'compose create',
+        'network create', 'network connect', 'network disconnect',
+        'volume create',
+    },
+    'critical': {
+        'rm', 'rmi', 'system prune', 'volume rm', 'volume prune',
+        'network rm', 'network prune', 'image prune', 'container prune',
+        'compose rm', 'builder prune',
+    },
+    'blocked': {
+        'save', 'load', 'export', 'import', 'commit', 'push',
+        'login', 'logout', 'trust', 'manifest', 'buildx',
+        'swarm', 'service', 'stack', 'secret', 'config create',
+    },
 }
 
 # Invisible characters
@@ -636,7 +680,6 @@ class AlertManager:
                                                  f"AIOHAI: {alert['title']}", 0x10)
             except Exception:
                 pass  # Desktop alert is best-effort
-        self.running = False
 
 
 # =============================================================================
@@ -879,13 +922,20 @@ class NetworkInterceptor:
     
     def _is_doh_server(self, host: str) -> bool:
         """Check if host is a DNS-over-HTTPS server."""
+        # SECURITY FIX (F-003): Exact or suffix match instead of substring
         host_lower = host.lower()
-        return any(doh.lower() in host_lower or host_lower in doh.lower() 
-                   for doh in DOH_SERVERS)
+        for doh in DOH_SERVERS:
+            doh_lower = doh.lower()
+            if host_lower == doh_lower or host_lower.endswith('.' + doh_lower):
+                return True
+        return False
     
     def _check_connection(self, host: str, port: int) -> Tuple[bool, str]:
+        # SECURITY FIX (F-003): Exact or suffix match instead of substring
+        host_lower = host.lower()
         for allowed in self.config.network_allowlist:
-            if allowed.lower() in host.lower():
+            allowed_lower = allowed.lower()
+            if host_lower == allowed_lower or host_lower.endswith('.' + allowed_lower):
                 return True, "Allowlisted"
         
         # Block private IPs
@@ -1074,11 +1124,13 @@ class PathValidator:
 # =============================================================================
 
 class CommandValidator:
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger):
+    def __init__(self, config: UnifiedConfig, logger: SecurityLogger,
+                 macro_blocker: 'MacroBlocker' = None):
         self.config = config
         self.logger = logger
         self.blocked_patterns = [re.compile(p, re.I) for p in BLOCKED_COMMAND_PATTERNS]
         self.uac_patterns = [re.compile(p, re.I) for p in UAC_BYPASS_PATTERNS]
+        self.macro_blocker = macro_blocker
     
     def validate(self, command: str) -> Tuple[bool, str]:
         # Blocked patterns
@@ -1091,6 +1143,12 @@ class CommandValidator:
             if pattern.search(command):
                 return False, "UAC bypass pattern"
         
+        # OFFICE: Block macro execution commands (VBScript, CScript, Office /m switches)
+        if self.macro_blocker:
+            macro_ok, macro_reason = self.macro_blocker.check_command_for_macro_execution(command)
+            if not macro_ok:
+                return False, macro_reason
+        
         # Parse executable
         try:
             args = shlex.split(command)
@@ -1100,6 +1158,12 @@ class CommandValidator:
             exe = os.path.basename(args[0]).lower()
             if exe not in self.config.whitelisted_executables:
                 return False, f"Not whitelisted: {exe}"
+            
+            # Docker-specific tier validation
+            if exe in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'):
+                tier_ok, tier_reason = self._validate_docker_command(args)
+                if not tier_ok:
+                    return False, tier_reason
         except Exception as e:
             return False, f"Parse error: {e}"
         
@@ -1108,6 +1172,58 @@ class CommandValidator:
             return False, "Obfuscation detected"
         
         return True, "OK"
+    
+    def get_docker_tier(self, command: str) -> str:
+        """Return the tier classification for a docker command."""
+        try:
+            args = shlex.split(command)
+            exe = os.path.basename(args[0]).lower()
+            if exe not in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'):
+                return 'unknown'
+            return self._classify_docker_subcommand(args)
+        except Exception:
+            return 'unknown'
+    
+    def _validate_docker_command(self, args: List[str]) -> Tuple[bool, str]:
+        """Validate docker command against tier system."""
+        tier = self._classify_docker_subcommand(args)
+        subcommand = ' '.join(args[1:3]) if len(args) > 1 else '(none)'
+        
+        if tier == 'blocked':
+            self.logger.log_blocked("DOCKER_COMMAND", subcommand, "Docker subcommand not permitted")
+            return False, f"Docker '{subcommand}' is blocked (tier: blocked)"
+        
+        # standard, elevated, critical all pass validation
+        # (approval UI handles the tier display)
+        return True, f"Docker tier: {tier}"
+    
+    def _classify_docker_subcommand(self, args: List[str]) -> str:
+        """Classify a docker command into its tier."""
+        if len(args) < 2:
+            return 'standard'  # Bare 'docker' with no args
+        
+        exe = os.path.basename(args[0]).lower()
+        
+        # docker-compose commands
+        if exe in ('docker-compose', 'docker-compose.exe'):
+            check_cmd = args[1].lower() if len(args) > 1 else ''
+        else:
+            # docker commands: handle 'docker compose' (new CLI) vs 'docker <cmd>'
+            check_cmd = args[1].lower() if len(args) > 1 else ''
+        
+        # Check two-word commands first (e.g., 'compose up', 'network ls')
+        if len(args) > 2:
+            two_word = f"{args[1].lower()} {args[2].lower()}"
+            for tier_name in ('blocked', 'critical', 'elevated', 'standard'):
+                if two_word in DOCKER_COMMAND_TIERS[tier_name]:
+                    return tier_name
+        
+        # Check single-word command
+        for tier_name in ('blocked', 'critical', 'elevated', 'standard'):
+            if check_cmd in DOCKER_COMMAND_TIERS[tier_name]:
+                return tier_name
+        
+        return 'elevated'  # Unknown commands default to elevated
     
     def _is_obfuscated(self, cmd: str) -> bool:
         if len(cmd) < 20:
@@ -1151,13 +1267,23 @@ class SecureExecutor:
     
     def __init__(self, config: UnifiedConfig, logger: SecurityLogger, alerts: AlertManager,
                  path_validator: PathValidator, command_validator: CommandValidator,
-                 transparency_tracker: 'SessionTransparencyTracker' = None):
+                 transparency_tracker: 'SessionTransparencyTracker' = None,
+                 doc_scanner: 'DocumentContentScanner' = None,
+                 macro_blocker: 'MacroBlocker' = None,
+                 metadata_sanitizer: 'MetadataSanitizer' = None,
+                 doc_audit_logger: 'DocumentAuditLogger' = None):
         self.config = config
         self.logger = logger
         self.alerts = alerts
         self.path_validator = path_validator
         self.command_validator = command_validator
         self.transparency = transparency_tracker
+        
+        # Office document security components
+        self.doc_scanner = doc_scanner
+        self.macro_blocker = macro_blocker
+        self.metadata_sanitizer = metadata_sanitizer
+        self.doc_audit_logger = doc_audit_logger
         
         # Initialize security components
         if SECURITY_COMPONENTS_AVAILABLE:
@@ -1192,15 +1318,6 @@ class SecureExecutor:
         """Check if file is a docker-compose file."""
         filename = os.path.basename(path).lower()
         return 'docker-compose' in filename or 'compose.y' in filename
-    
-    def _check_sensitivity(self, target: str, content: str = "") -> Optional[str]:
-        """Check for sensitive operations and return warning if needed."""
-        if not self.sensitive_detector:
-            return None
-        matches = self.sensitive_detector.detect(target, content)
-        if matches:
-            return self.sensitive_detector.format_warning(matches)
-        return None
     
     def execute_command(self, command: str, user_id: str = "default") -> Tuple[bool, str]:
         """Execute command with full security controls and transparency tracking."""
@@ -1342,6 +1459,15 @@ class SecureExecutor:
                 self.transparency.record_blocked("WRITE", path, reason)
             return False, f"❌ Path blocked: {reason}"
         
+        # OFFICE: Block macro-enabled extensions at the gate
+        if self.macro_blocker:
+            ext_ok, ext_reason = self.macro_blocker.check_extension(resolved)
+            if not ext_ok:
+                self.logger.log_blocked("MACRO_EXTENSION", resolved, ext_reason)
+                if self.transparency:
+                    self.transparency.record_blocked("WRITE", resolved, ext_reason)
+                return False, f"❌ {ext_reason}"
+        
         # File size check
         content_size = len(content.encode('utf-8'))
         if self.resource_limiter and not self.resource_limiter.check_file_size(content_size):
@@ -1399,6 +1525,50 @@ class SecureExecutor:
                 elif self.smart_home_analyzer.should_warn():
                     warnings_report = f"\n\n⚠️ **Security Notes:**\n{self.smart_home_analyzer.get_report()}"
         
+        # OFFICE: Document content scanning for Office file types
+        ext = os.path.splitext(resolved)[1].lower()
+        
+        cached_scan_result = None  # Cache scan result to avoid re-scanning in audit log
+        
+        if ext in OFFICE_SCANNABLE_EXTENSIONS and self.doc_scanner:
+            cached_scan_result = self.doc_scanner.scan(
+                content, file_type=ext, filename=os.path.basename(resolved))
+            
+            if cached_scan_result['should_block']:
+                # Critical PII was already escalated to TIER 3 at pre-approval.
+                # If we're here, the user has approved (possibly via FIDO2).
+                # Log it but proceed — the pre-approval gate is the enforcement point.
+                # Exception: dangerous FORMULAS are still hard-blocked here (not PII).
+                if cached_scan_result.get('formula_issues'):
+                    # Dangerous formulas (WEBSERVICE, DDE, etc.) — always hard block
+                    summary = self.doc_scanner.get_scan_summary(cached_scan_result)
+                    self.logger.log_blocked("DOCUMENT_FORMULA", resolved, summary[:200])
+                    self.alerts.alert(AlertSeverity.HIGH, "DOCUMENT_FORMULA_BLOCKED",
+                                      f"Dangerous formula in {os.path.basename(resolved)}")
+                    if self.transparency:
+                        self.transparency.record_blocked("WRITE", resolved,
+                                                         "Dangerous Excel formula")
+                    return False, f"❌ Document content blocked (dangerous formula):\n{summary}"
+                else:
+                    # PII-only block — log warning, proceed (FIDO2 approval covers this)
+                    summary = self.doc_scanner.get_scan_summary(cached_scan_result)
+                    self.logger.log_event("DOCUMENT_PII_APPROVED", AlertSeverity.WARNING,
+                                          {'path': resolved[:200], 'summary': summary[:200]})
+                    warnings_report += f"\n\n⚠️ **PII Notice (approved):**\n{summary}"
+            
+            elif cached_scan_result['findings']:
+                warnings_report += (f"\n\n⚠️ **Document Scan:**\n"
+                                    f"{self.doc_scanner.get_scan_summary(cached_scan_result)}")
+        
+        # OFFICE: VBA content scanning (catches macro code in non-macro extensions too)
+        if self.macro_blocker and ext in OFFICE_SCANNABLE_EXTENSIONS:
+            vba_ok, vba_reason = self.macro_blocker.scan_content_for_vba(content)
+            if not vba_ok:
+                self.logger.log_blocked("VBA_CONTENT", resolved, vba_reason)
+                if self.transparency:
+                    self.transparency.record_blocked("WRITE", resolved, vba_reason)
+                return False, f"❌ VBA content blocked: {vba_reason}"
+        
         try:
             os.makedirs(os.path.dirname(resolved), exist_ok=True)
             with open(resolved, 'w', encoding='utf-8') as f:
@@ -1410,6 +1580,35 @@ class SecureExecutor:
                 warning = self.multi_stage.check()
                 if warning:
                     self.alerts.alert(AlertSeverity.HIGH, "MULTI_STAGE_ATTACK", warning)
+            
+            # OFFICE: Auto-run metadata sanitization after successful write
+            if ext in {'.docx', '.xlsx', '.pptx'} and self.metadata_sanitizer:
+                try:
+                    # SECURITY FIX (F-002): Direct function call replaces dynamic code evaluation
+                    self.metadata_sanitizer.sanitize_file(resolved, file_type=ext)
+                    self.metadata_sanitizer.record_sanitization(resolved)
+                    warnings_report += "\n🧹 Metadata sanitized (author, company, revision stripped)"
+                except ImportError:
+                    # Library not installed — metadata can't be stripped, warn user
+                    warnings_report += ("\n⚠️ Metadata sanitization skipped — "
+                                        "Office library not installed for this format")
+                except Exception as meta_err:
+                    warnings_report += f"\n⚠️ Metadata sanitization failed: {meta_err}"
+            
+            # OFFICE: Audit log
+            if self.doc_audit_logger and ext in OFFICE_SCANNABLE_EXTENSIONS:
+                content_hash = self.doc_audit_logger.hash_content(content.encode('utf-8'))
+                pii_findings = []
+                # Reuse cached scan result from earlier instead of re-scanning
+                if cached_scan_result is not None:
+                    pii_findings = cached_scan_result.get('pii_findings', [])
+                self.doc_audit_logger.log_operation(
+                    'CREATE', resolved, file_type=ext,
+                    content_hash=content_hash,
+                    pii_findings=pii_findings,
+                    metadata_stripped=bool(self.metadata_sanitizer and
+                                          ext in {'.docx', '.xlsx', '.pptx'}),
+                )
             
             # Transparency tracking
             if self.transparency:
@@ -1491,6 +1690,791 @@ class SecureExecutor:
 
 
 # =============================================================================
+# LOCAL SERVICE REGISTRY
+# =============================================================================
+
+class LocalServiceRegistry:
+    """Registry for local services the model can query (Frigate, HA, etc.).
+    
+    Validates that API requests target only registered localhost services
+    with explicitly allowed paths. Prevents the model from querying
+    arbitrary endpoints.
+    """
+    
+    def __init__(self, logger: SecurityLogger):
+        self.logger = logger
+        self._services: Dict[str, Dict] = {}
+    
+    def register(self, name: str, host: str, port: int,
+                 allowed_paths: List[str], max_response_bytes: int = 1048576,
+                 description: str = ''):
+        """Register a local service.
+        
+        L-7 FIX: Verifies the service is actually listening on the port
+        before registration to prevent fake service injection via config.
+        """
+        # Validate host is localhost
+        if host not in ('127.0.0.1', 'localhost', '::1'):
+            self.logger.log_event("LOCAL_SERVICE_REJECTED", AlertSeverity.WARNING,
+                                  {'service': name, 'host': host, 'reason': 'Non-local host'})
+            return
+        
+        # L-7 FIX: Verify service is actually listening
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('127.0.0.1' if host == 'localhost' else host, port))
+            sock.close()
+            if result != 0:
+                self.logger.log_event("LOCAL_SERVICE_NOT_LISTENING", AlertSeverity.WARNING,
+                                      {'service': name, 'port': port,
+                                       'reason': 'No service responding on port'})
+                return
+        except Exception as e:
+            self.logger.log_event("LOCAL_SERVICE_VERIFY_FAILED", AlertSeverity.WARNING,
+                                  {'service': name, 'port': port, 'error': str(e)})
+            return
+        
+        self._services[name] = {
+            'host': host,
+            'port': port,
+            'allowed_paths': allowed_paths,
+            'max_response_bytes': max_response_bytes,
+            'description': description,
+        }
+        self.logger.log_event("LOCAL_SERVICE_REGISTERED", AlertSeverity.INFO,
+                              {'service': name, 'endpoint': f'{host}:{port}',
+                               'paths': len(allowed_paths)})
+    
+    def validate_request(self, url: str) -> Tuple[bool, str]:
+        """Validate a URL against registered services."""
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except Exception:
+            return False, "Invalid URL"
+        
+        # Must be HTTP to localhost
+        if parsed.scheme not in ('http', 'https'):
+            return False, f"Scheme not allowed: {parsed.scheme}"
+        
+        host = parsed.hostname or ''
+        if host not in ('127.0.0.1', 'localhost', '::1'):
+            return False, f"Non-local host: {host}"
+        
+        port = parsed.port
+        path = parsed.path or '/'
+        
+        # Find matching service
+        for svc_name, svc in self._services.items():
+            if svc['port'] == port:
+                # Check if path is allowed
+                for allowed in svc['allowed_paths']:
+                    if allowed.endswith('*'):
+                        if path.startswith(allowed[:-1]):
+                            return True, svc_name
+                    elif path == allowed:
+                        return True, svc_name
+                
+                return False, f"Path '{path}' not allowed for {svc_name}"
+        
+        return False, f"No registered service on port {port}"
+    
+    def get_max_response(self, service_name: str) -> int:
+        """Get max response size for a service."""
+        svc = self._services.get(service_name, {})
+        return svc.get('max_response_bytes', 1048576)
+    
+    def load_from_config(self, config_data: dict):
+        """Load additional services from config.json local_services section."""
+        local_services = config_data.get('local_services', {})
+        for name, svc_cfg in local_services.items():
+            host = svc_cfg.get('host', '127.0.0.1')
+            if host not in ('127.0.0.1', 'localhost', '::1'):
+                self.logger.log_event("LOCAL_SERVICE_CONFIG_REJECTED", AlertSeverity.WARNING,
+                                      {'service': name, 'host': host, 'reason': 'Non-local host in config'})
+                continue
+            self.register(
+                name=name,
+                host=host,
+                port=svc_cfg.get('port', 80),
+                allowed_paths=svc_cfg.get('allowed_paths', []),
+                max_response_bytes=svc_cfg.get('max_response_bytes', 1048576),
+                description=svc_cfg.get('description', ''),
+            )
+
+
+class LocalAPIQueryExecutor:
+    """Executes validated API queries against local services.
+    
+    All queries must pass through LocalServiceRegistry validation first.
+    Responses are PII-redacted before being returned to the model.
+    """
+    
+    def __init__(self, service_registry: LocalServiceRegistry,
+                 logger: SecurityLogger, pii_protector=None,
+                 transparency_tracker=None):
+        self.registry = service_registry
+        self.logger = logger
+        self.pii_protector = pii_protector
+        self.transparency_tracker = transparency_tracker  # M-9 FIX
+    
+    def execute(self, url: str, method: str = 'GET',
+                headers: dict = None, timeout: int = 10) -> Tuple[bool, str]:
+        """Execute a validated API query."""
+        # Validate through registry
+        is_valid, svc_or_reason = self.registry.validate_request(url)
+        if not is_valid:
+            self.logger.log_blocked("LOCAL_API_QUERY", url, svc_or_reason)
+            return False, f"Query blocked: {svc_or_reason}"
+        
+        service_name = svc_or_reason
+        max_bytes = self.registry.get_max_response(service_name)
+        
+        try:
+            req = urllib.request.Request(url, method=method.upper())
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
+            
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read(max_bytes)
+                content_type = resp.headers.get('Content-Type', '')
+                
+                # If JSON/text, decode and optionally redact PII
+                if 'json' in content_type or 'text' in content_type:
+                    text = data.decode('utf-8', errors='replace')
+                    if self.pii_protector:
+                        text = self.pii_protector.redact(text)
+                    
+                    self.logger.log_action("LOCAL_API_QUERY", url, "SUCCESS",
+                                           {'service': service_name, 'bytes': len(data)})
+                    # M-9 FIX: Record in transparency tracker
+                    if self.transparency_tracker:
+                        self.transparency_tracker.record_api_query(
+                            service_name, url, success=True)
+                    return True, text
+                else:
+                    # Binary (images etc) - return info, not raw data
+                    self.logger.log_action("LOCAL_API_QUERY", url, "SUCCESS",
+                                           {'type': 'binary', 'bytes': len(data),
+                                            'content_type': content_type})
+                    if self.transparency_tracker:
+                        self.transparency_tracker.record_api_query(
+                            service_name, url, success=True)
+                    return True, f"[Binary response: {len(data)} bytes, type: {content_type}]"
+                    
+        except urllib.error.HTTPError as e:
+            self.logger.log_action("LOCAL_API_QUERY", url, "HTTP_ERROR",
+                                   {'status': e.code})
+            if self.transparency_tracker:
+                self.transparency_tracker.record_api_query(
+                    service_name, url, success=False)
+            return False, f"HTTP {e.code}"
+        except urllib.error.URLError as e:
+            self.logger.log_action("LOCAL_API_QUERY", url, "CONNECTION_ERROR",
+                                   {'reason': str(e.reason)})
+            if self.transparency_tracker:
+                self.transparency_tracker.record_api_query(
+                    service_name, url, success=False)
+            return False, f"Connection failed: {e.reason}"
+        except Exception as e:
+            self.logger.log_action("LOCAL_API_QUERY", url, "ERROR",
+                                   {'error': str(e)})
+            if self.transparency_tracker:
+                self.transparency_tracker.record_api_query(
+                    service_name, url, success=False)
+            return False, f"Query error: {e}"
+
+
+# =============================================================================
+# OFFICE DOCUMENT SECURITY
+# =============================================================================
+
+# NOTE: Office blocked paths (templates, XLSTART, PST/OST, MRU) are merged into
+# BLOCKED_PATH_PATTERNS above so they are enforced by PathValidator automatically.
+
+# Macro-enabled file extensions that are ALWAYS blocked for creation/write
+MACRO_ENABLED_EXTENSIONS = frozenset({
+    '.xlsm', '.xltm', '.xlam',  # Excel macro-enabled
+    '.docm', '.dotm',            # Word macro-enabled
+    '.pptm', '.potm', '.ppam',   # PowerPoint macro-enabled
+    '.xlsb',                     # Excel binary (can contain macros)
+})
+
+# Safe Office extensions for creation
+SAFE_OFFICE_EXTENSIONS = frozenset({
+    '.docx', '.xlsx', '.pptx',   # Standard Office
+    '.dotx', '.xltx', '.potx',   # Templates (no macros)
+    '.csv', '.tsv', '.txt',      # Plain data
+    '.pdf',                       # Read-only output
+})
+
+# Office extensions that should be content-scanned for PII/formulas
+# (used in both SecureExecutor.write_file and handler pre-approval)
+OFFICE_SCANNABLE_EXTENSIONS = frozenset({
+    '.docx', '.xlsx', '.pptx', '.csv', '.tsv',
+    '.dotx', '.xltx', '.potx', '.doc', '.xls', '.ppt',
+})
+
+# Excel formulas that can execute commands or exfiltrate data
+BLOCKED_EXCEL_FORMULAS = [
+    r'(?i)=\s*WEBSERVICE\s*\(',
+    r'(?i)=\s*FILTERXML\s*\(',
+    r'(?i)=\s*RTD\s*\(',
+    r'(?i)=\s*SQL\.REQUEST\s*\(',
+    r'(?i)=\s*CALL\s*\(',
+    r'(?i)=\s*REGISTER\.ID\s*\(',
+    # DDE command execution
+    r'(?i)=\s*\w+\|[\'"]?/[Cc]',
+    r'(?i)=\s*cmd\s*\|',
+    r'(?i)=\s*msexcel\s*\|',
+    r'(?i)=\s*dde\s*\(',
+    # External references (UNC paths)
+    r'(?i)=\s*[\'"]\\\\[^\\]+\\',
+]
+
+# Embedded file types that are BLOCKED in Office documents
+BLOCKED_EMBED_EXTENSIONS = frozenset({
+    '.exe', '.dll', '.bat', '.cmd', '.ps1', '.psm1',
+    '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+    '.scr', '.com', '.msi', '.msp', '.cpl', '.hta',
+    '.inf', '.reg', '.rgs', '.sct', '.shb', '.pif',
+})
+
+# Graph API endpoints that are ALWAYS blocked
+BLOCKED_GRAPH_ENDPOINTS = [
+    r'/me/sendMail',
+    r'/me/messages/.*/send',
+    r'/me/drive/items/.*/invite',
+    r'/me/drive/items/.*/permissions',
+    r'/groups/.*/drive',
+    r'/admin/',
+    r'/directory/',
+    r'/users/.*/memberOf',
+    r'/organization/',
+]
+
+# Graph API scopes that are too broad
+BLOCKED_GRAPH_SCOPES = frozenset({
+    'Directory.ReadWrite.All',
+    'Mail.Send',
+    'Mail.ReadWrite',
+    'Sites.FullControl.All',
+    'Group.ReadWrite.All',
+    'User.ReadWrite.All',
+    'RoleManagement.ReadWrite.Directory',
+})
+
+
+class DocumentContentScanner:
+    """
+    Scans document content BEFORE writing to detect PII, credentials,
+    dangerous formulas, external references, and blocked embedded objects.
+    
+    Uses existing PIIProtector and CredentialRedactor for detection,
+    adds Office-specific scanning on top.
+    """
+    
+    def __init__(self, logger: SecurityLogger,
+                 pii_protector=None, credential_redactor=None):
+        self.logger = logger
+        self.pii_protector = pii_protector
+        self.credential_redactor = credential_redactor
+        self._formula_patterns = [re.compile(p) for p in BLOCKED_EXCEL_FORMULAS]
+    
+    def scan(self, content: str, file_type: str = '',
+             filename: str = '') -> Dict:
+        """
+        Scan document content for security issues.
+        
+        Returns:
+            Dict with keys: safe (bool), findings (list), should_block (bool),
+                           pii_findings (list), formula_issues (list),
+                           credential_issues (list)
+        """
+        result = {
+            'safe': True,
+            'should_block': False,
+            'findings': [],
+            'pii_findings': [],
+            'formula_issues': [],
+            'credential_issues': [],
+            'external_refs': [],
+        }
+        
+        # 1. PII detection
+        if self.pii_protector:
+            pii_findings = self.pii_protector.detect_pii(content)
+            result['pii_findings'] = pii_findings
+            
+            # Check for critical PII
+            critical_types = {'ssn', 'credit_card', 'private_key', 'aws_key'}
+            has_critical = any(f.get('pii_type', '').lower() in critical_types
+                              or getattr(f, 'pii_type', '').lower() in critical_types
+                              for f in pii_findings)
+            if has_critical:
+                result['should_block'] = True
+                result['findings'].append({
+                    'severity': 'CRITICAL',
+                    'type': 'critical_pii',
+                    'message': 'Critical PII detected (SSN, credit card, or key material)',
+                })
+            elif pii_findings:
+                result['findings'].append({
+                    'severity': 'WARNING',
+                    'type': 'pii_detected',
+                    'message': f'{len(pii_findings)} PII item(s) detected',
+                })
+        
+        # 2. Credential detection
+        if self.credential_redactor:
+            original = content
+            redacted = self.credential_redactor.redact(content)
+            if redacted != original:
+                result['credential_issues'].append({
+                    'severity': 'WARNING',
+                    'message': 'Credential-like patterns found in content',
+                })
+                result['findings'].append({
+                    'severity': 'WARNING',
+                    'type': 'credentials_detected',
+                    'message': 'Content contains patterns matching credentials',
+                })
+        
+        # 3. Excel formula safety (for spreadsheet content)
+        if file_type in ('.xlsx', '.xls', '.csv', '.tsv'):
+            formula_issues = self._scan_formulas(content)
+            result['formula_issues'] = formula_issues
+            if formula_issues:
+                result['should_block'] = True
+                result['findings'].append({
+                    'severity': 'CRITICAL',
+                    'type': 'dangerous_formula',
+                    'message': f'{len(formula_issues)} blocked formula(s) detected',
+                })
+        
+        # 4. CSV injection check
+        if file_type in ('.csv', '.tsv'):
+            csv_issues = self._scan_csv_injection(content)
+            if csv_issues:
+                result['findings'].append({
+                    'severity': 'WARNING',
+                    'type': 'csv_injection_risk',
+                    'message': f'{len(csv_issues)} cell(s) with formula injection risk',
+                })
+        
+        # 5. External reference detection
+        ext_refs = self._scan_external_references(content)
+        result['external_refs'] = ext_refs
+        if ext_refs:
+            result['findings'].append({
+                'severity': 'WARNING',
+                'type': 'external_references',
+                'message': f'{len(ext_refs)} external reference(s) detected',
+            })
+        
+        result['safe'] = len(result['findings']) == 0
+        
+        if result['findings']:
+            self.logger.log_event("DOCUMENT_CONTENT_SCAN", AlertSeverity.WARNING,
+                                  {'file_type': file_type, 'filename': filename,
+                                   'findings': len(result['findings']),
+                                   'should_block': result['should_block']})
+        
+        return result
+    
+    def _scan_formulas(self, content: str) -> List[Dict]:
+        """Check for blocked Excel formulas."""
+        issues = []
+        for i, line in enumerate(content.split('\n'), 1):
+            for pattern in self._formula_patterns:
+                if pattern.search(line):
+                    issues.append({
+                        'line': i,
+                        'pattern': pattern.pattern[:40],
+                        'content': line[:80],
+                    })
+        return issues
+    
+    def _scan_csv_injection(self, content: str) -> List[Dict]:
+        """Detect CSV injection patterns."""
+        issues = []
+        dangerous_prefixes = ('=', '+', '-', '@', '\t', '\r')
+        for i, line in enumerate(content.split('\n'), 1):
+            for cell in line.split(','):
+                cell = cell.strip().strip('"').strip("'")
+                if cell and cell[0] in dangerous_prefixes:
+                    # Exception: negative numbers are fine
+                    if cell[0] == '-':
+                        try:
+                            float(cell)
+                            continue
+                        except ValueError:
+                            pass
+                    issues.append({'line': i, 'cell': cell[:40]})
+        return issues
+    
+    def _scan_external_references(self, content: str) -> List[Dict]:
+        """Detect external URLs, UNC paths, and data connections."""
+        refs = []
+        # UNC paths
+        unc_pattern = re.compile(r'\\\\[^\s\\]+\\[^\s]+')
+        for match in unc_pattern.finditer(content):
+            refs.append({'type': 'unc_path', 'value': match.group()[:60]})
+        
+        # External URLs in formulas or content
+        url_pattern = re.compile(r'https?://[^\s"\'<>]+', re.I)
+        for match in url_pattern.finditer(content):
+            url = match.group()
+            # Allow localhost
+            if '127.0.0.1' in url or 'localhost' in url:
+                continue
+            refs.append({'type': 'external_url', 'value': url[:80]})
+        
+        return refs
+    
+    def get_scan_summary(self, scan_result: Dict) -> str:
+        """Format scan results for user display."""
+        if scan_result['safe']:
+            return "✅ Document content scan: clean"
+        
+        lines = ["⚠️ Document Content Scan Results:"]
+        for finding in scan_result['findings']:
+            icon = '🔴' if finding['severity'] == 'CRITICAL' else '🟡'
+            lines.append(f"  {icon} [{finding['severity']}] {finding['message']}")
+        
+        if scan_result['should_block']:
+            lines.append("\n❌ Operation blocked — critical issues found.")
+            lines.append("   Resolve critical items or confirm to proceed.")
+        
+        return '\n'.join(lines)
+
+
+class MacroBlocker:
+    """
+    Hard block on macro-enabled document creation and VBA execution.
+    
+    This is a security-critical class — macros in Office documents are
+    a primary malware delivery vector.
+    """
+    
+    def __init__(self, logger: SecurityLogger):
+        self.logger = logger
+    
+    def check_extension(self, file_path: str) -> Tuple[bool, str]:
+        """
+        Check if a file extension is allowed for creation.
+        
+        Returns:
+            (allowed, reason) — False + reason if blocked
+        """
+        ext = Path(file_path).suffix.lower()
+        
+        if ext in MACRO_ENABLED_EXTENSIONS:
+            self.logger.log_event("MACRO_DOCUMENT_BLOCKED", AlertSeverity.HIGH,
+                                  {'path': str(file_path)[:200], 'extension': ext})
+            return False, (f"Macro-enabled format '{ext}' is blocked. "
+                          f"Use the macro-free equivalent instead: "
+                          f"{self._suggest_safe_alternative(ext)}")
+        
+        return True, ''
+    
+    def scan_content_for_vba(self, content: str) -> Tuple[bool, str]:
+        """
+        Scan content for VBA/macro indicators.
+        
+        Returns:
+            (safe, reason) — False + reason if VBA content detected
+        """
+        vba_indicators = [
+            (r'(?i)\bSub\s+\w+\s*\(', 'VBA Sub procedure'),
+            (r'(?i)\bFunction\s+\w+\s*\(', 'VBA Function'),
+            (r'(?i)\bDim\s+\w+\s+As\s+', 'VBA variable declaration'),
+            (r'(?i)\bSet\s+\w+\s*=\s*CreateObject', 'COM object creation'),
+            (r'(?i)\bShell\s*\(', 'Shell command execution'),
+            (r'(?i)\bApplication\.Run\b', 'Application.Run call'),
+            (r'(?i)\bApplication\.VBE\b', 'VBA Editor access'),
+            (r'(?i)\bWScript\.Shell\b', 'WScript Shell access'),
+            (r'(?i)\bActiveX', 'ActiveX control'),
+            (r'(?i)\bCreateObject\s*\(\s*["\']', 'COM object instantiation'),
+            (r'(?i)\bAutoOpen\b', 'Auto-execute macro'),
+            (r'(?i)\bAuto_Open\b', 'Auto-execute macro'),
+            (r'(?i)\bWorkbook_Open\b', 'Workbook open event'),
+            (r'(?i)\bDocument_Open\b', 'Document open event'),
+        ]
+        
+        found = []
+        for pattern, description in vba_indicators:
+            if re.search(pattern, content):
+                found.append(description)
+        
+        if found:
+            self.logger.log_event("VBA_CONTENT_BLOCKED", AlertSeverity.HIGH,
+                                  {'indicators': found[:5]})
+            return False, f"VBA/macro content detected: {', '.join(found[:3])}"
+        
+        return True, ''
+    
+    def check_command_for_macro_execution(self, command: str) -> Tuple[bool, str]:
+        """
+        Check if a command attempts to execute Office macros.
+        
+        Returns:
+            (safe, reason)
+        """
+        macro_patterns = [
+            (r'(?i)wscript\s+', 'WScript execution'),
+            (r'(?i)cscript\s+', 'CScript execution'),
+            (r'(?i)\.vbs\b', 'VBScript file'),
+            (r'(?i)\.vbe\b', 'Encoded VBScript'),
+            (r'(?i)winword.*\/m', 'Word with macro switch'),
+            (r'(?i)excel.*\/e', 'Excel with macro switch'),
+            (r'(?i)Application\.Run', 'Office macro execution'),
+            (r'(?i)mshta\b', 'HTML Application host'),
+        ]
+        
+        for pattern, description in macro_patterns:
+            if re.search(pattern, command):
+                self.logger.log_event("MACRO_EXECUTION_BLOCKED", AlertSeverity.HIGH,
+                                      {'command': command[:100], 'reason': description})
+                return False, f"Macro execution blocked: {description}"
+        
+        return True, ''
+    
+    def _suggest_safe_alternative(self, blocked_ext: str) -> str:
+        """Suggest macro-free alternative for a blocked extension."""
+        alternatives = {
+            '.xlsm': '.xlsx', '.xltm': '.xltx', '.xlam': '.xlsx',
+            '.xlsb': '.xlsx',
+            '.docm': '.docx', '.dotm': '.dotx',
+            '.pptm': '.pptx', '.potm': '.potx', '.ppam': '.pptx',
+        }
+        return alternatives.get(blocked_ext, '.docx/.xlsx/.pptx')
+
+
+class MetadataSanitizer:
+    """
+    Strips identifying metadata from Office documents before they are
+    written to disk or shared.
+    
+    This prevents leakage of:
+    - Author names and company affiliation
+    - Revision history and tracked changes
+    - Comments (unless user opts in)
+    - Embedded file paths (which reveal directory structure)
+    - Custom XML properties
+    
+    SECURITY FIX (F-002): Uses direct library calls instead of dynamic code
+    evaluation to eliminate injection via crafted file paths.
+    """
+    
+    # Core properties to clear
+    CLEAR_PROPERTIES = [
+        'author', 'last_modified_by', 'company', 'manager',
+        'category', 'content_status', 'identifier', 'subject',
+        'version', 'comments',
+    ]
+    
+    # Properties to PRESERVE
+    PRESERVE_PROPERTIES = ['title', 'language']
+    
+    def __init__(self, logger: SecurityLogger):
+        self.logger = logger
+        self._sanitized_count = 0
+    
+    def sanitize_file(self, file_path: str, file_type: str = '',
+                      preserve_comments: bool = False) -> bool:
+        """Sanitize metadata for the given document.
+        
+        Args:
+            file_path: Path to the document (passed as variable, never interpolated).
+            file_type: Extension override (e.g. '.docx').
+            preserve_comments: If True, keep document comments intact.
+        
+        Returns:
+            True on success.
+        
+        Raises:
+            ImportError: If the required library is not installed.
+            Exception: On any sanitization failure.
+        """
+        ext = file_type or Path(file_path).suffix.lower()
+        
+        if ext == '.docx':
+            return self._sanitize_docx(file_path, preserve_comments)
+        elif ext == '.xlsx':
+            return self._sanitize_xlsx(file_path)
+        elif ext == '.pptx':
+            return self._sanitize_pptx(file_path)
+        return True  # No sanitization needed for this type
+    
+    def _sanitize_docx(self, path: str, preserve_comments: bool) -> bool:
+        from docx import Document
+        from datetime import datetime
+        
+        doc = Document(path)
+        cp = doc.core_properties
+        cp.author = ''
+        cp.last_modified_by = ''
+        cp.revision = 1
+        cp.category = ''
+        cp.content_status = ''
+        cp.identifier = ''
+        cp.subject = ''
+        cp.version = ''
+        cp.created = datetime.now()
+        cp.modified = datetime.now()
+        if not preserve_comments:
+            cp.comments = ''
+        doc.save(path)
+        return True
+    
+    def _sanitize_xlsx(self, path: str) -> bool:
+        from openpyxl import load_workbook
+        from datetime import datetime
+        
+        wb = load_workbook(path)
+        wb.properties.creator = ''
+        wb.properties.lastModifiedBy = ''
+        wb.properties.company = ''
+        wb.properties.manager = ''
+        wb.properties.category = ''
+        wb.properties.description = ''
+        wb.properties.created = datetime.now()
+        wb.properties.modified = datetime.now()
+        wb.save(path)
+        return True
+    
+    def _sanitize_pptx(self, path: str) -> bool:
+        from pptx import Presentation
+        from datetime import datetime
+        
+        prs = Presentation(path)
+        cp = prs.core_properties
+        cp.author = ''
+        cp.last_modified_by = ''
+        cp.revision = 1
+        cp.comments = ''
+        cp.category = ''
+        cp.subject = ''
+        prs.save(path)
+        return True
+    
+    def record_sanitization(self, file_path: str):
+        """Record that a file was sanitized."""
+        self._sanitized_count += 1
+        self.logger.log_event("METADATA_SANITIZED", AlertSeverity.INFO,
+                              {'path': str(file_path)[:200],
+                               'total_sanitized': self._sanitized_count})
+
+
+class GraphAPIRegistry:
+    """
+    Security gateway for Microsoft Graph API requests.
+    
+    Validates endpoints against allow/block lists, enforces scope restrictions,
+    and applies tier-based approval requirements.
+    
+    Tier mapping to FIDO2 ApprovalTier:
+      standard → TIER_2 (software approval)
+      elevated → TIER_2 (software approval)
+      critical → TIER_3 (hardware FIDO2 approval required)
+      blocked  → rejected (no approval possible)
+    
+    Follows the same pattern as LocalServiceRegistry for consistency.
+    """
+    
+    # Mapping from Graph API tiers to FIDO2 approval tiers
+    GRAPH_TO_FIDO2_TIER = {
+        'standard': 'TIER_2',
+        'elevated': 'TIER_2',
+        'critical': 'TIER_3',
+    }
+    
+    # Tier definitions for Graph API operations
+    GRAPH_TIERS = {
+        'standard': [
+            'GET /me/drive/root/children',
+            'GET /me/drive/search',
+            'GET /me/drive/items/*/children',
+            'GET /me/profile',
+        ],
+        'elevated': [
+            'GET /me/drive/items/*/content',
+            'GET /me/drive/root:/*:/content',
+            'GET /me/messages',
+            'GET /me/calendar/events',
+        ],
+        'critical': [
+            'PUT /me/drive/items/*/content',
+            'POST /me/drive/root/children',
+            'PATCH /me/drive/items/*',
+        ],
+    }
+    
+    def __init__(self, logger: SecurityLogger, config: Dict = None):
+        self.logger = logger
+        self._config = config or {}
+        self._blocked_patterns = [re.compile(p) for p in BLOCKED_GRAPH_ENDPOINTS]
+        self._allowed_scopes = set(self._config.get('scopes', []))
+        self._blocked_scopes = BLOCKED_GRAPH_SCOPES
+    
+    def validate_request(self, method: str, endpoint: str,
+                         token_scopes: Set[str] = None) -> Tuple[bool, str, str]:
+        """
+        Validate a Graph API request.
+        
+        Returns:
+            (allowed, tier_or_reason, service_name)
+            tier is the FIDO2-mapped tier name (TIER_2, TIER_3) for approved requests
+        """
+        # 1. Check blocked endpoints
+        for pattern in self._blocked_patterns:
+            if pattern.search(endpoint):
+                self.logger.log_event("GRAPH_API_BLOCKED", AlertSeverity.HIGH,
+                                      {'method': method, 'endpoint': endpoint[:100],
+                                       'reason': 'Blocked endpoint'})
+                return False, f"Endpoint blocked: {endpoint}", ''
+        
+        # 2. Check token scopes
+        if token_scopes:
+            dangerous = token_scopes & self._blocked_scopes
+            if dangerous:
+                self.logger.log_event("GRAPH_API_SCOPE_BLOCKED", AlertSeverity.HIGH,
+                                      {'blocked_scopes': list(dangerous)})
+                return False, f"Token has blocked scopes: {', '.join(dangerous)}", ''
+        
+        # 3. Determine tier and map to FIDO2
+        graph_tier = self._get_tier(method, endpoint)
+        fido2_tier = self.GRAPH_TO_FIDO2_TIER.get(graph_tier, 'TIER_2')
+        
+        return True, fido2_tier, 'graph_api'
+    
+    def _get_tier(self, method: str, endpoint: str) -> str:
+        """Classify a Graph API request into a tier."""
+        request_str = f"{method.upper()} {endpoint}"
+        
+        for tier, patterns in self.GRAPH_TIERS.items():
+            for pattern in patterns:
+                # Convert simple patterns to regex
+                regex = pattern.replace('*', '[^/]+')
+                if re.match(regex, request_str, re.I):
+                    return tier
+        
+        return 'elevated'  # Default to elevated for unknown endpoints
+    
+    def validate_scopes(self, token_scopes: Set[str]) -> Tuple[bool, List[str]]:
+        """
+        Check if a token's scopes are safe to use.
+        
+        Returns:
+            (safe, list_of_blocked_scopes_found)
+        """
+        dangerous = token_scopes & self._blocked_scopes
+        return len(dangerous) == 0, list(dangerous)
+
+
+# =============================================================================
 # APPROVAL MANAGER (ENHANCED - rate limited, session-bound)
 # =============================================================================
 
@@ -1512,7 +2496,14 @@ class ApprovalManager:
             self.sensitive_detector = None
     
     def create_request(self, action_type: str, target: str, content: str,
-                       user_id: str = "default", session_id: str = "default") -> str:
+                       user_id: str = "", session_id: str = "") -> str:
+        """Create an approval request. session_id MUST be provided by the caller.
+        
+        Raises SecurityError if session_id is empty (H-5 fix).
+        """
+        if not session_id:
+            raise SecurityError("session_id is required for approval requests (H-5 fix)")
+        
         with self.lock:
             # Rate limit check
             session_pending = sum(1 for a in self.pending.values() 
@@ -1568,13 +2559,17 @@ class ApprovalManager:
             
             action = self.pending[found_id]
             
-            # Session check (timing-safe) - only if not default
-            stored_session = action.get('session_id', 'default')
-            if stored_session != 'default' and session_id != 'default':
-                if not hmac.compare_digest(stored_session, session_id):
-                    self.logger.log_event("APPROVAL_SESSION_MISMATCH", AlertSeverity.HIGH,
-                                         {'id': approval_id[:8]})
-                    return None
+            # H-5 FIX: Always enforce session binding — never skip for 'default'.
+            # Both stored and provided session IDs must be non-empty and match.
+            stored_session = action.get('session_id', '')
+            if not stored_session or not session_id:
+                self.logger.log_event("APPROVAL_SESSION_MISSING", AlertSeverity.HIGH,
+                                     {'id': approval_id[:8]})
+                return None
+            if not hmac.compare_digest(stored_session, session_id):
+                self.logger.log_event("APPROVAL_SESSION_MISMATCH", AlertSeverity.HIGH,
+                                     {'id': approval_id[:8]})
+                return None
             
             # Expiration check
             if datetime.fromisoformat(action['expires']) < datetime.now():
@@ -1659,6 +2654,59 @@ class ActionParser:
 
 
 # =============================================================================
+# OLLAMA CIRCUIT BREAKER (M-8 FIX)
+# =============================================================================
+
+class OllamaCircuitBreaker:
+    """Prevents thread exhaustion when Ollama is down or slow.
+    
+    After `failure_threshold` consecutive failures, the breaker opens and
+    immediately rejects requests for `reset_timeout` seconds instead of
+    waiting the full 300s Ollama timeout per request.
+    """
+    
+    def __init__(self, failure_threshold: int = 3, reset_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.failures = 0
+        self.last_failure_time: float = 0
+        self.state = 'closed'  # closed=normal, open=blocking, half-open=testing
+        self.lock = threading.Lock()
+    
+    def can_request(self) -> bool:
+        """Check if a request should be allowed through."""
+        with self.lock:
+            if self.state == 'closed':
+                return True
+            if self.state == 'open':
+                # Check if enough time has passed to try again
+                if time.time() - self.last_failure_time > self.reset_timeout:
+                    self.state = 'half-open'
+                    return True
+                return False
+            # half-open: allow one request to test
+            return True
+    
+    def record_success(self):
+        """Record a successful Ollama call. Resets the breaker."""
+        with self.lock:
+            self.failures = 0
+            self.state = 'closed'
+    
+    def record_failure(self):
+        """Record a failed Ollama call. May trip the breaker."""
+        with self.lock:
+            self.failures += 1
+            self.last_failure_time = time.time()
+            if self.failures >= self.failure_threshold:
+                self.state = 'open'
+    
+    def is_open(self) -> bool:
+        with self.lock:
+            return self.state == 'open'
+
+
+# =============================================================================
 # HTTP HANDLER (ENHANCED)
 # =============================================================================
 
@@ -1678,6 +2726,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
     transparency_tracker: 'SessionTransparencyTracker' = None
     credential_redactor: 'CredentialRedactor' = None
     sensitive_detector: 'SensitiveOperationDetector' = None
+    ollama_breaker: OllamaCircuitBreaker = None  # M-8 FIX
     
     def log_message(self, format, *args):
         pass  # Suppress default logging
@@ -1979,13 +3028,30 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             if not pending:
                 return "✅ No non-destructive actions to execute."
         
+        # SECURITY FIX (F-001): Separate tier3 actions — they cannot be batch-approved
+        tier3_actions = {k: v for k, v in pending.items() if v.get('tier3_required')}
+        normal_actions = {k: v for k, v in pending.items() if not v.get('tier3_required')}
+        
         results = []
-        results.append(f"**Executing {len(pending)} action(s)...**\n")
+        
+        if tier3_actions:
+            results.append(f"⚠️ **{len(tier3_actions)} action(s) require hardware approval and cannot be batch-confirmed:**\n")
+            for aid, action in tier3_actions.items():
+                short_id = aid[:8]
+                results.append(f"  🔐 `{short_id}` **{action['type']}** — `{os.path.basename(action['target'])}`")
+            results.append(f"\nConfirm these individually with `CONFIRM <id>` (hardware key tap required).\n")
+        
+        if not normal_actions:
+            if tier3_actions:
+                return "\n".join(results)
+            return "✅ No pending actions to execute."
+        
+        results.append(f"**Executing {len(normal_actions)} action(s)...**\n")
         
         success_count = 0
         fail_count = 0
         
-        for aid, action in list(pending.items()):
+        for aid, action in list(normal_actions.items()):
             short_id = aid[:8]
             atype = action['type']
             target = action['target']
@@ -2049,14 +3115,104 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         
         return "\n".join(results)
     
+    def _require_hardware_approval(self, action: dict) -> Tuple[bool, str]:
+        """Block until FIDO2 hardware approval is received, or return failure.
+        
+        Returns:
+            (True, "") if hardware approval granted
+            (False, user_message) if denied, timed out, or unavailable
+        """
+        fido2 = getattr(self, 'fido2_client', None)
+        if fido2 is None:
+            # FIDO2 not available — fail closed, never fall through to chat approval
+            return False, (
+                "❌ **Hardware approval required but FIDO2 is not available.**\n\n"
+                "This action targets sensitive data and requires a physical security key "
+                "or biometric verification. Please ensure your FIDO2 device is configured "
+                "and the approval server is running (`--no-fido2` was not used)."
+            )
+        
+        atype = action['type']
+        target = action.get('target', '')
+        
+        try:
+            # Create the hardware approval request
+            # H-4 FIX: Sanitize content preview before sending to FIDO2 UI
+            raw_preview = (action.get('content', '') or '')[:200]
+            if hasattr(self, 'content_sanitizer') and self.content_sanitizer:
+                sanitized_preview = self.content_sanitizer.sanitize(raw_preview)
+            else:
+                # Fallback: strip anything that isn't alphanumeric, whitespace, or basic punctuation
+                sanitized_preview = re.sub(r'[^\w\s.,;:!?\-/\\()\'\"=+]', '', raw_preview)
+            
+            req = fido2.request_approval(
+                operation_type=atype,
+                target=target,
+                description=f"{atype} on {os.path.basename(target)}",
+                tier=3,
+                metadata={'content_preview': sanitized_preview}
+            )
+            request_id = req.get('request_id', '')
+            approval_url = req.get('approval_url', '')
+            
+            self.logger.log_event("FIDO2_REQUESTED", AlertSeverity.INFO, {
+                'action_type': atype, 'target': target[:200],
+                'request_id': request_id[:16],
+            })
+            
+            # Poll until approved, rejected, or timeout
+            timeout = getattr(self.config, 'fido2_poll_timeout', 300)
+            result = fido2.wait_for_approval(
+                request_id,
+                timeout_seconds=timeout,
+                poll_interval=1.0,
+            )
+            
+            status = result.get('status', 'unknown')
+            
+            if status == 'approved':
+                self.logger.log_event("FIDO2_APPROVED", AlertSeverity.INFO, {
+                    'action_type': atype, 'target': target[:200],
+                    'approved_by': result.get('approved_by', 'unknown'),
+                    'authenticator': result.get('authenticator_used', 'unknown'),
+                })
+                return True, ""
+            
+            elif status == 'rejected':
+                self.logger.log_event("FIDO2_REJECTED", AlertSeverity.WARNING, {
+                    'action_type': atype, 'target': target[:200],
+                })
+                return False, "❌ Hardware approval **rejected**. Action will not execute."
+            
+            else:  # expired, timeout, error
+                self.logger.log_event("FIDO2_TIMEOUT", AlertSeverity.WARNING, {
+                    'action_type': atype, 'target': target[:200], 'status': status,
+                })
+                return False, (
+                    f"⏰ Hardware approval **timed out** ({timeout}s). "
+                    f"Action will not execute. Re-request and try again."
+                )
+        
+        except Exception as e:
+            self.logger.log_event("FIDO2_ERROR", AlertSeverity.HIGH, {
+                'action_type': atype, 'target': target[:200], 'error': str(e),
+            })
+            return False, f"❌ Hardware approval failed: {e}\n\nAction will not execute."
+    
     def _execute_approved(self, aid: str) -> str:
-        action = self.approval_mgr.approve(aid)
+        action = self.approval_mgr.approve(aid, session_id=self.logger.session_id)
         if not action:
             return f"⚠️ No action: `{aid}` (expired?)"
         
         atype = action['type']
         target = action['target']
         content = action['content']
+        
+        # SECURITY FIX (F-001): Enforce FIDO2 hardware approval for Tier 3 actions
+        if action.get('tier3_required'):
+            approved, message = self._require_hardware_approval(action)
+            if not approved:
+                return message
         
         # Dual LLM verification (NEW)
         if self.dual_verifier and self.config.enable_dual_llm:
@@ -2114,6 +3270,43 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                     continue
                 # Tier-3 paths: still create approval but tag it for FIDO2
                 tier3_required = (reason == "Tier 3 required")
+                
+                # GAP 8 FIX: Block macro-enabled extensions at pre-approval
+                # (catches .xlsm/.docm/.pptm before the approval card is shown)
+                if atype == 'WRITE' and self.executor.macro_blocker:
+                    ext_ok, ext_reason = self.executor.macro_blocker.check_extension(target)
+                    if not ext_ok:
+                        self.logger.log_blocked("PRE_APPROVAL_MACRO", target, ext_reason)
+                        lines.append(
+                            f"\n\n---\n### 🚫 Blocked: WRITE `{os.path.basename(target)}`"
+                            f"\n\n{ext_reason}"
+                        )
+                        continue
+                
+                # GAP 7 FIX: PII pre-scan for Office documents → TIER 3 escalation
+                # instead of blocking at write_file, escalate to require hardware approval
+                target_ext = os.path.splitext(target)[1].lower()
+                if (atype == 'WRITE' and target_ext in OFFICE_SCANNABLE_EXTENSIONS
+                        and self.executor.doc_scanner and content):
+                    pre_scan = self.executor.doc_scanner.scan(
+                        content, file_type=target_ext,
+                        filename=os.path.basename(target))
+                    if pre_scan.get('should_block'):
+                        # Critical PII (SSN, credit card, keys) → escalate to TIER 3
+                        # instead of hard-blocking, let the user approve with FIDO2
+                        tier3_required = True
+                        pii_summary = self.executor.doc_scanner.get_scan_summary(pre_scan)
+                        # Store PII info so the approval card can show it
+                        # (will be picked up after approval creation below)
+                        self._pending_pii_warning = pii_summary
+                    elif pre_scan.get('findings'):
+                        # Non-critical PII (email, phone) → note in approval card
+                        self._pending_pii_warning = self.executor.doc_scanner.get_scan_summary(pre_scan)
+                    else:
+                        self._pending_pii_warning = None
+                else:
+                    self._pending_pii_warning = None
+                
             elif atype == 'COMMAND' and target:
                 is_safe, reason = self.executor.command_validator.validate(target)
                 if not is_safe:
@@ -2124,12 +3317,18 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                     )
                     continue
                 tier3_required = False
+                self._pending_pii_warning = None
             else:
                 tier3_required = False
+                self._pending_pii_warning = None
             
             # ----- Create approval request -----
             try:
-                aid = self.approval_mgr.create_request(atype, target, content)
+                # H-5 FIX: Always pass session_id to enforce session binding
+                aid = self.approval_mgr.create_request(
+                    atype, target, content,
+                    session_id=self.logger.session_id
+                )
             except Exception as e:
                 lines.append(f"\n\n---\n### 🚫 Action Blocked\n\n{str(e)}")
                 continue
@@ -2146,10 +3345,28 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             
             # Prepend tier-3 warning to the action card
             if tier3_required:
+                tier3_reason = ""
+                if self._pending_pii_warning:
+                    tier3_reason = (
+                        f"\n\n{self._pending_pii_warning}"
+                        f"\n\nThis document contains sensitive data. "
+                    )
+                else:
+                    tier3_reason = (
+                        f"\n\nThis action targets sensitive data. "
+                    )
                 card = (
                     f"\n\n---\n### 🔐 Hardware Approval Required"
-                    f"\n\nThis action targets sensitive data and requires "
+                    f"{tier3_reason}"
+                    f"Approval requires "
                     f"**FIDO2 hardware key tap** or **biometric verification**."
+                    + card
+                )
+            elif self._pending_pii_warning:
+                # Non-critical PII — show warning but don't require FIDO2
+                card = (
+                    f"\n\n---\n### ⚠️ Document Content Notice"
+                    f"\n\n{self._pending_pii_warning}"
                     + card
                 )
             
@@ -2199,11 +3416,30 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             'icon': '⚠️', 'verb': atype, 'desc': target
         })
         
+        # L-6 FIX: If this is a Docker command, show the tier classification
+        docker_tier_line = ""
+        if atype == 'COMMAND' and target.strip().lower().startswith('docker'):
+            docker_tier = self._get_docker_tier(target)
+            if docker_tier:
+                tier_icons = {'standard': '🟢', 'elevated': '🟡', 'critical': '🔴'}
+                docker_tier_line = (
+                    f"\n⚓ **Docker Tier:** {tier_icons.get(docker_tier, '⚪')} "
+                    f"{docker_tier.upper()}"
+                )
+        
         return (f"\n\n---\n"
                 f"### {cfg['icon']} {atype} — {cfg['verb']}\n\n"
-                f"{cfg['desc']}{sensitivity_warning}\n\n"
+                f"{cfg['desc']}{docker_tier_line}{sensitivity_warning}\n\n"
                 f"```\n📋 {target}\n🔑 {short_id}\n```\n\n"
                 f"{confirm_line}")
+    
+    def _get_docker_tier(self, command: str) -> Optional[str]:
+        """Determine the Docker command tier for display purposes.
+        Delegates to CommandValidator.get_docker_tier to avoid duplication."""
+        if hasattr(self, 'executor') and self.executor and self.executor.command_validator:
+            tier = self.executor.command_validator.get_docker_tier(command)
+            return tier if tier != 'unknown' else None
+        return None
     
     def _format_write_preview(self, target: str, content: str) -> str:
         """Format write action with credential-redacted preview."""
@@ -2287,13 +3523,25 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             return f"Execute `{first_word}`"
     
     def _call_ollama(self, body: bytes) -> Optional[Dict]:
+        # M-8 FIX: Check circuit breaker before attempting request
+        breaker = getattr(self.__class__, 'ollama_breaker', None)
+        if breaker and not breaker.can_request():
+            self.logger.log_event("OLLAMA_CIRCUIT_OPEN", AlertSeverity.WARNING,
+                                  {'reason': 'Circuit breaker open after consecutive failures'})
+            return None
+        
         url = f"http://{self.config.ollama_host}:{self.config.ollama_port}{self.path}"
         try:
             req = urllib.request.Request(url, data=body, method='POST')
             req.add_header('Content-Type', 'application/json')
             with urllib.request.urlopen(req, timeout=300) as resp:
-                return json.loads(resp.read())
+                result = json.loads(resp.read())
+                if breaker:
+                    breaker.record_success()
+                return result
         except Exception as e:
+            if breaker:
+                breaker.record_failure()
             self.logger.log_event("OLLAMA_ERROR", AlertSeverity.HIGH, {'error': str(e)})
             return None
     
@@ -2386,12 +3634,47 @@ content here
 <action type="DELETE" target="C:\\path\\to\\file"></action>
 ```
 
+**Query local service (Frigate, Home Assistant):**
+```
+<action type="API_QUERY" target="http://127.0.0.1:5000/api/events">GET</action>
+```
+
+### Registered Local Services:
+- **Frigate NVR:** http://127.0.0.1:5000 (camera events, snapshots, stats)
+- **Home Assistant:** http://127.0.0.1:8123 (states, history, config)
+- **AIOHAI Bridge:** http://127.0.0.1:11436 (notifications, health)
+
+### Document Operations:
+For Office document tasks, use the DOCUMENT_OP action or generate Python scripts with COMMAND:
+```
+<action type="COMMAND" target="python3 create_report.py">
+# Python script using python-docx, openpyxl, or python-pptx
+</action>
+```
+All document writes are automatically scanned for PII and have metadata stripped.
+Macro-enabled formats (.xlsm, .docm, .pptm) are ALWAYS blocked.
+
+If Microsoft Graph API is configured, use API_QUERY for OneDrive/SharePoint:
+```
+<action type="API_QUERY" target="https://graph.microsoft.com/v1.0/me/drive/search(q='report')">GET</action>
+```
+Graph API email sending and file sharing endpoints are always blocked.
+
 ### RULES:
 1. ALL actions require user approval (CONFIRM command)
 2. NEVER access credential files, SSH keys, or .env files
 3. NEVER use encoded commands or obfuscated scripts
 4. ALWAYS explain what you're doing and why
 5. For DELETE, warn the user clearly
+6. Docker commands are tiered: standard (auto), elevated (approval), critical (extra warning), blocked (denied)
+7. API_QUERY only works with registered local services on localhost
+8. For smart home tasks, refer to the Home Assistant Orchestration Framework loaded after this policy
+9. NEVER create macro-enabled documents (.xlsm, .docm, .pptm, .dotm, .xlsb)
+10. ALL document writes must pass PII scanning — block on critical PII (SSN, credit cards, keys)
+11. ALL created/modified documents must have metadata stripped (author, company, revision history)
+12. NEVER write to Office template directories (Templates, XLSTART, Startup)
+13. Excel formulas must not use WEBSERVICE, FILTERXML, RTD, SQL.REQUEST, CALL, REGISTER.ID, or DDE
+14. For Office document tasks, refer to the Microsoft Office Orchestration Framework loaded after this policy
 """
 
 
@@ -2416,10 +3699,65 @@ class UnifiedSecureProxy:
         self.integrity = IntegrityVerifier(self.config, self.logger, self.alerts)
         self.network = NetworkInterceptor(self.config, self.logger, self.alerts)
         self.sanitizer = ContentSanitizer(self.logger, self.alerts)
+        
+        # Pre-initialize Office document security components (needed by CommandValidator + SecureExecutor)
+        self.doc_scanner = None
+        self.macro_blocker = None
+        self.metadata_sanitizer = None
+        self.graph_api_registry = None
+        self.office_detector = None
+        self.doc_audit_logger = None
+        
+        if SECURITY_COMPONENTS_AVAILABLE:
+            try:
+                config_path = self.config.base_dir / 'config' / 'config.json'
+                office_config = {}
+                if config_path.exists():
+                    with open(config_path) as f:
+                        full_cfg = json.load(f)
+                        office_config = full_cfg.get('office', {})
+                
+                if office_config.get('enabled', False):
+                    self.doc_scanner = DocumentContentScanner(
+                        self.logger,
+                        pii_protector=self.pii_protector,
+                        credential_redactor=(CredentialRedactor()
+                                             if SECURITY_COMPONENTS_AVAILABLE else None),
+                    )
+                    self.macro_blocker = MacroBlocker(self.logger)
+                    self.metadata_sanitizer = MetadataSanitizer(self.logger)
+                    
+                    graph_config = office_config.get('graph_api', {})
+                    if graph_config.get('enabled', False):
+                        self.graph_api_registry = GraphAPIRegistry(
+                            self.logger, config=graph_config)
+                    
+                    self.office_detector = OfficeStackDetector(
+                        base_dir=str(self.config.base_dir))
+                    status = self.office_detector.detect()
+                    self.logger.log_event("OFFICE_DETECTED", AlertSeverity.INFO,
+                                          {'state': status['detection_state']})
+                    
+                    audit_config = office_config.get('audit', {})
+                    if audit_config.get('enabled', True):
+                        self.doc_audit_logger = DocumentAuditLogger(
+                            log_dir=self.config.log_dir / 'document_audit',
+                            retention_days=audit_config.get('retention_days', 30),
+                            log_content_hashes=audit_config.get('log_content_hashes', True),
+                        )
+            except Exception as e:
+                self.logger.log_event("OFFICE_INIT_ERROR", AlertSeverity.WARNING,
+                                      {'error': str(e)})
+        
         self.path_validator = PathValidator(self.config, self.logger)
-        self.command_validator = CommandValidator(self.config, self.logger)
+        self.command_validator = CommandValidator(self.config, self.logger,
+                                                  macro_blocker=self.macro_blocker)
         self.executor = SecureExecutor(self.config, self.logger, self.alerts,
-                                       self.path_validator, self.command_validator)
+                                       self.path_validator, self.command_validator,
+                                       doc_scanner=self.doc_scanner,
+                                       macro_blocker=self.macro_blocker,
+                                       metadata_sanitizer=self.metadata_sanitizer,
+                                       doc_audit_logger=self.doc_audit_logger)
         self.approval_mgr = ApprovalManager(self.config, self.logger)
         
         # Initialize HSM (must happen after logger, before components that need it)
@@ -2480,14 +3818,146 @@ class UnifiedSecureProxy:
         
         # Load policy
         self.policy = self._load_policy()
+        
+        # Initialize smart home components
+        self.notification_bridge = None
+        self.service_registry = None
+        self.api_query_executor = None
+        self.stack_detector = None
+        
+        if SECURITY_COMPONENTS_AVAILABLE:
+            try:
+                # Load smart_home config if present
+                config_path = self.config.base_dir / 'config' / 'config.json'
+                sh_config = {}
+                if config_path.exists():
+                    with open(config_path) as f:
+                        full_cfg = json.load(f)
+                        sh_config = full_cfg.get('smart_home', {})
+                
+                if sh_config.get('enabled', True):
+                    # Service registry
+                    self.service_registry = LocalServiceRegistry(self.logger)
+                    
+                    # Register default services
+                    self.service_registry.register(
+                        'frigate', '127.0.0.1', 5000,
+                        ['/api/events', '/api/stats', '/api/version',
+                         '/api/config', '/api/*'],
+                        max_response_bytes=1048576,
+                        description='Frigate NVR'
+                    )
+                    self.service_registry.register(
+                        'homeassistant', '127.0.0.1', 8123,
+                        ['/api/states', '/api/states/*', '/api/history/period*',
+                         '/api/config', '/api/events'],
+                        max_response_bytes=1048576,
+                        description='Home Assistant'
+                    )
+                    
+                    # Load any custom services from config
+                    if config_path.exists():
+                        with open(config_path) as f:
+                            self.service_registry.load_from_config(json.load(f))
+                    
+                    # API query executor
+                    self.api_query_executor = LocalAPIQueryExecutor(
+                        self.service_registry, self.logger, self.pii_protector
+                    )
+                    
+                    # Notification bridge
+                    nb_config = sh_config.get('notification_bridge', {})
+                    if nb_config.get('enabled', True):
+                        self.notification_bridge = HomeAssistantNotificationBridge(
+                            alert_manager=self.alerts,
+                            port=nb_config.get('port', 11436),
+                            frigate_host=nb_config.get('frigate_host', '127.0.0.1'),
+                            frigate_port=nb_config.get('frigate_port', 5000),
+                        )
+                        self.notification_bridge.start()
+                        
+                        # Register bridge as queryable service
+                        self.service_registry.register(
+                            'aiohai_bridge', '127.0.0.1',
+                            nb_config.get('port', 11436),
+                            ['/notifications', '/health'],
+                            max_response_bytes=524288,
+                            description='AIOHAI Notification Bridge'
+                        )
+                    
+                    # Stack detector
+                    sd_config = sh_config.get('stack_detection', {})
+                    if sd_config.get('enabled', True):
+                        self.stack_detector = SmartHomeStackDetector(
+                            base_dir=str(self.config.base_dir)
+                        )
+                        status = self.stack_detector.detect()
+                        self.logger.log_event("SMART_HOME_DETECTED", AlertSeverity.INFO,
+                                              {'state': status['deployment_state']})
+                
+            except Exception as e:
+                self.logger.log_event("SMART_HOME_INIT_ERROR", AlertSeverity.WARNING,
+                                      {'error': str(e)})
     
     def _load_policy(self) -> str:
         if self.config.policy_file.exists():
             content = self.config.policy_file.read_text(encoding='utf-8')
             self.logger.log_event("POLICY_LOADED", AlertSeverity.INFO, {'size': len(content)})
+            
+            # Load framework prompts from the policy directory
+            content = self._load_frameworks(content)
+            
             return content
         self.logger.log_event("POLICY_NOT_FOUND", AlertSeverity.WARNING, {})
         return ""
+    
+    def _load_frameworks(self, policy_content: str) -> str:
+        """Load framework prompt files from the policy directory.
+        
+        Framework files (named *_framework_*.md) encode domain-specific knowledge
+        for the local model. They are appended AFTER the security policy to ensure
+        the policy always takes precedence.
+        
+        M-6 FIX: Only load from an explicit allowlist of known framework filenames
+        to prevent prompt injection via rogue files dropped in the directory.
+        """
+        # M-6 FIX: Allowlist of known framework files. Add new ones here explicitly.
+        ALLOWED_FRAMEWORK_NAMES = {
+            'ha_framework_v3.md',
+            'office_framework_v3.md',
+            'ha_framework_v4.md',
+            'office_framework_v4.md',
+        }
+        
+        policy_dir = self.config.policy_file.parent
+        framework_files = sorted(policy_dir.glob('*_framework_*.md'))
+        
+        if not framework_files:
+            return policy_content
+        
+        combined = policy_content
+        for fw_file in framework_files:
+            # M-6 FIX: Reject files not in the allowlist
+            if fw_file.name not in ALLOWED_FRAMEWORK_NAMES:
+                self.logger.log_event("FRAMEWORK_REJECTED", AlertSeverity.HIGH, {
+                    'file': fw_file.name,
+                    'reason': 'Not in allowed framework list'
+                })
+                continue
+            
+            try:
+                fw_content = fw_file.read_text(encoding='utf-8')
+                combined += f"\n\n{'='*80}\n"
+                combined += f"FRAMEWORK: {fw_file.stem}\n"
+                combined += f"{'='*80}\n\n"
+                combined += fw_content
+                self.logger.log_event("FRAMEWORK_LOADED", AlertSeverity.INFO,
+                                      {'file': fw_file.name, 'size': len(fw_content)})
+            except Exception as e:
+                self.logger.log_event("FRAMEWORK_LOAD_ERROR", AlertSeverity.WARNING,
+                                      {'file': fw_file.name, 'error': str(e)})
+        
+        return combined
     
     def _verify_policy_with_hsm(self) -> bool:
         """Verify policy file signature using HSM.
@@ -2581,9 +4051,12 @@ class UnifiedSecureProxy:
     def _start_hsm_monitor(self):
         """Background thread that checks HSM health and attempts reconnection."""
         HSM_CHECK_INTERVAL = HSM_HEALTH_CHECK_INTERVAL
+        HSM_ALERT_THRESHOLD = 3  # L-8 FIX: Alert after this many consecutive failures
         
         def _monitor():
             was_connected = self.hsm_manager is not None and self.hsm_manager.is_connected()
+            consecutive_failures = 0  # L-8 FIX
+            
             while True:
                 time.sleep(HSM_CHECK_INTERVAL)
                 if not self.hsm_manager:
@@ -2597,6 +4070,7 @@ class UnifiedSecureProxy:
                         'impact': 'Log signing disabled, falling back to software mode'
                     })
                     print("\n  ⚠  HSM disconnected — running in degraded mode")
+                    consecutive_failures = 0
                 
                 elif not was_connected and not is_connected:
                     # Still disconnected — try to reconnect
@@ -2609,9 +4083,38 @@ class UnifiedSecureProxy:
                                 self.logger.log_event("HSM_RECONNECTED", AlertSeverity.INFO, {})
                                 print("\n  ✓ HSM reconnected")
                                 is_connected = True
+                                consecutive_failures = 0
+                            else:
+                                consecutive_failures += 1
+                        else:
+                            consecutive_failures += 1
                     except Exception as e:
+                        consecutive_failures += 1
                         self.logger.log_event("HSM_RECONNECT_FAILED", AlertSeverity.WARNING,
-                                              {'error': str(e)})
+                                              {'error': str(e),
+                                               'consecutive_failures': consecutive_failures})
+                    
+                    # L-8 FIX: Alert after N consecutive reconnection failures
+                    if consecutive_failures >= HSM_ALERT_THRESHOLD:
+                        self.logger.log_event("HSM_PERSISTENT_FAILURE", AlertSeverity.CRITICAL, {
+                            'consecutive_failures': consecutive_failures,
+                            'impact': 'HSM unreachable — log signing and policy verification unavailable'
+                        })
+                        # Send desktop notification if bridge is available
+                        if hasattr(self, 'notification_bridge') and self.notification_bridge:
+                            try:
+                                self.notification_bridge.send_alert(
+                                    title="HSM Connection Lost",
+                                    message=f"HSM unreachable for {consecutive_failures} consecutive checks. "
+                                            f"Log signing and policy verification are unavailable.",
+                                    severity="critical"
+                                )
+                            except Exception:
+                                pass  # Best-effort notification
+                        # Reset counter to avoid spamming (re-alert every N failures)
+                        consecutive_failures = 0
+                else:
+                    consecutive_failures = 0
                 
                 was_connected = is_connected
         
@@ -2655,6 +4158,16 @@ class UnifiedSecureProxy:
         print(f"Listen:   http://{self.config.listen_host}:{self.config.listen_port}")
         print(f"Ollama:   http://{self.config.ollama_host}:{self.config.ollama_port}")
         print(f"Policy:   {'✓ Loaded' if self.policy else '✗ Not found'}")
+        
+        # Show loaded frameworks
+        fw_dir = self.config.policy_file.parent
+        fw_files = sorted(fw_dir.glob('*_framework_*.md'))
+        if fw_files:
+            fw_names = [f.stem for f in fw_files]
+            print(f"Frameworks: {len(fw_files)} loaded ({', '.join(fw_names)})")
+        else:
+            print("Frameworks: None")
+        
         print(f"Session:  {self.logger.session_id}")
         
         if self.hsm_manager and self.hsm_manager.is_connected():
@@ -2707,6 +4220,15 @@ class UnifiedSecureProxy:
             "PII protection in logs and responses",
             "Multi-stage attack detection",
         ]
+        if self.doc_scanner:
+            features.append("Office document PII scanning")
+            features.append("Macro-enabled format blocking")
+            features.append("Document metadata sanitization")
+            features.append("Excel formula safety enforcement")
+        if self.graph_api_registry:
+            features.append("Graph API scope enforcement")
+        if self.doc_audit_logger:
+            features.append("Document operation audit logging")
         if self.config.enable_dual_llm:
             features.append("Dual-LLM verification enabled")
         for f in features:
@@ -2850,6 +4372,7 @@ class UnifiedSecureProxy:
         UnifiedProxyHandler.fido2_client = self.fido2_client  # FIDO2 for TIER 3
         UnifiedProxyHandler.fido2_server = self.fido2_server
         UnifiedProxyHandler.integrity_verifier = self.integrity
+        UnifiedProxyHandler.ollama_breaker = OllamaCircuitBreaker()  # M-8 FIX
         print("  ✓ Configured")
         
         # 8. Start server
@@ -2889,10 +4412,98 @@ class UnifiedSecureProxy:
 # ENTRY POINT
 # =============================================================================
 
+def _load_config_from_file(config: UnifiedConfig, config_path: Path) -> None:
+    """SECURITY FIX (F-005): Merge config.json settings into UnifiedConfig.
+    
+    Only sets values that are present in the file.
+    CLI arguments (set after this call) take highest priority:
+        CLI flags > config.json > hardcoded defaults
+    """
+    if not config_path.exists():
+        return
+    
+    try:
+        with open(config_path) as f:
+            file_cfg = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"  ⚠ Could not read {config_path}: {e}")
+        return
+    
+    # General
+    gen = file_cfg.get('general', {})
+    if 'base_directory' in gen:
+        config.base_dir = Path(gen['base_directory'])
+    
+    # Proxy
+    prx = file_cfg.get('proxy', {})
+    if 'listen_port' in prx:
+        config.listen_port = prx['listen_port']
+    
+    # Ollama
+    oll = file_cfg.get('ollama', {})
+    if 'port' in oll:
+        config.ollama_port = oll['port']
+    
+    # Network
+    net = file_cfg.get('network', {})
+    if 'allowlist' in net:
+        # Merge with defaults rather than replace (ensure localhost always present)
+        base = {'localhost', '127.0.0.1'}
+        config.network_allowlist = list(base | set(net['allowlist']))
+    if 'install_socket_hooks' in net:
+        config.enforce_network_allowlist = net['install_socket_hooks']
+    
+    # DNS security
+    dns = file_cfg.get('dns_security', {})
+    if 'max_query_length' in dns:
+        config.max_dns_query_length = dns['max_query_length']
+    if 'max_label_entropy' in dns:
+        config.max_dns_entropy = dns['max_label_entropy']
+    
+    # Resource limits
+    res = file_cfg.get('resource_limits', {})
+    if 'max_single_file_mb' in res:
+        config.max_file_size_mb = res['max_single_file_mb']
+    if 'rate_limit_per_minute' in res:
+        config.rate_limit_per_minute = res['rate_limit_per_minute']
+    if 'max_concurrent_actions' in res:
+        config.max_concurrent_actions = res['max_concurrent_actions']
+    
+    # Command execution
+    cmd = file_cfg.get('command_execution', {})
+    if 'timeout_seconds' in cmd:
+        config.command_timeout = cmd['timeout_seconds']
+    
+    # Security
+    sec = file_cfg.get('security', {})
+    if 'refuse_admin' in sec:
+        config.refuse_admin = sec['refuse_admin']
+    if 'inject_system_prompt' in sec:
+        config.inject_system_prompt = sec['inject_system_prompt']
+    if 'scan_for_injection' in sec:
+        config.scan_for_injection = sec['scan_for_injection']
+    
+    # HSM
+    hsm = file_cfg.get('hsm', {})
+    if 'enabled' in hsm:
+        config.hsm_enabled = hsm['enabled']
+    if 'required' in hsm:
+        config.hsm_required = hsm['required']
+    
+    # FIDO2
+    fido = file_cfg.get('fido2', {})
+    if 'enabled' in fido:
+        config.fido2_enabled = fido['enabled']
+    if 'server_port' in fido:
+        config.fido2_server_port = fido['server_port']
+    if 'poll_timeout' in fido:
+        config.fido2_poll_timeout = fido['poll_timeout']
+
+
 def main():
     parser = argparse.ArgumentParser(description='AIOHAI Unified Proxy v3.0 with Hardware Security')
-    parser.add_argument('--listen-port', type=int, default=11435)
-    parser.add_argument('--ollama-port', type=int, default=11434)
+    parser.add_argument('--listen-port', type=int, default=None)
+    parser.add_argument('--ollama-port', type=int, default=None)
     parser.add_argument('--base-dir', default=r'C:\AIOHAI')
     parser.add_argument('--policy', help='Policy file path')
     parser.add_argument('--enable-dual-llm', action='store_true',
@@ -2913,7 +4524,7 @@ def main():
     # FIDO2 arguments
     parser.add_argument('--no-fido2', action='store_true',
                        help='Disable FIDO2/WebAuthn hardware approval')
-    parser.add_argument('--fido2-port', type=int, default=8443,
+    parser.add_argument('--fido2-port', type=int, default=None,
                        help='Approval server HTTPS port (default: 8443)')
     parser.add_argument('--no-approval-server', action='store_true',
                        help='Disable auto-start of approval web server')
@@ -2923,25 +4534,43 @@ def main():
     args = parser.parse_args()
     
     config = UnifiedConfig()
-    config.listen_port = args.listen_port
-    config.ollama_port = args.ollama_port
-    config.base_dir = Path(args.base_dir)
-    config.enforce_network_allowlist = not args.no_network_control
-    config.scan_file_content = not args.no_file_scan
-    config.enable_dual_llm = args.enable_dual_llm
-    config.allow_degraded_security = args.allow_degraded
     
-    # HSM configuration
-    config.hsm_enabled = not args.no_hsm
-    config.hsm_required = not args.hsm_optional
-    config.hsm_use_mock = args.hsm_mock
+    # SECURITY FIX (F-005): Load config.json BEFORE CLI overrides
+    config_path = Path(args.base_dir) / 'config' / 'config.json'
+    _load_config_from_file(config, config_path)
+    
+    # CLI overrides (highest priority — only override if explicitly set)
+    if args.listen_port is not None:
+        config.listen_port = args.listen_port
+    if args.ollama_port is not None:
+        config.ollama_port = args.ollama_port
+    config.base_dir = Path(args.base_dir)
+    if args.no_network_control:
+        config.enforce_network_allowlist = False
+    if args.no_file_scan:
+        config.scan_file_content = False
+    if args.enable_dual_llm:
+        config.enable_dual_llm = True
+    if args.allow_degraded:
+        config.allow_degraded_security = True
+    
+    # HSM configuration (CLI overrides config.json)
+    if args.no_hsm:
+        config.hsm_enabled = False
+    if args.hsm_optional:
+        config.hsm_required = False
+    if args.hsm_mock:
+        config.hsm_use_mock = True
     if args.hsm_pin:
         config.hsm_pin = args.hsm_pin
     
-    # FIDO2 configuration
-    config.fido2_enabled = not args.no_fido2
-    config.fido2_server_port = args.fido2_port
-    config.fido2_auto_start_server = not args.no_approval_server
+    # FIDO2 configuration (CLI overrides config.json)
+    if args.no_fido2:
+        config.fido2_enabled = False
+    if args.fido2_port is not None:
+        config.fido2_server_port = args.fido2_port
+    if args.no_approval_server:
+        config.fido2_auto_start_server = False
     
     if args.policy:
         config.policy_file = Path(args.policy)

@@ -17,10 +17,14 @@ import re
 import os
 import sys
 import time
+import logging
 import threading
 import hashlib
 import json
+import subprocess
 import urllib.request
+import urllib.error
+from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Set
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -980,6 +984,7 @@ class SessionTransparencyTracker:
         self.files_deleted: List[Dict] = []
         self.commands_executed: List[Dict] = []
         self.directories_listed: List[Dict] = []
+        self.api_queries: List[Dict] = []  # M-9 FIX: Track LOCAL_API_QUERY actions
         self.sensitive_access: List[Dict] = []
         self.blocked_attempts: List[Dict] = []
         self.approvals_granted: int = 0
@@ -1043,6 +1048,18 @@ class SessionTransparencyTracker:
             self.directories_listed.append({
                 'path': path,
                 'item_count': count,
+                'success': success,
+                'timestamp': datetime.now().isoformat(),
+            })
+    
+    def record_api_query(self, service: str, endpoint: str, 
+                         sensitivity: str = "standard", success: bool = True):
+        """M-9 FIX: Track LOCAL_API_QUERY actions for transparency reporting."""
+        with self.lock:
+            self.api_queries.append({
+                'service': service,
+                'endpoint': endpoint[:200],
+                'sensitivity': sensitivity,
                 'success': success,
                 'timestamp': datetime.now().isoformat(),
             })
@@ -1150,6 +1167,19 @@ class SessionTransparencyTracker:
                 lines.append("*No commands executed*")
             lines.append("")
             
+            # M-9 FIX: API queries (Frigate, Home Assistant, etc.)
+            if self.api_queries:
+                lines.append(f"## 🌐 API Queries ({len(self.api_queries)})\n")
+                lines.append("| Service | Endpoint | Sensitivity | Status |")
+                lines.append("|---------|----------|-------------|--------|")
+                for q in self.api_queries[-15:]:
+                    status = "✅" if q['success'] else "❌"
+                    ep = q['endpoint'][:40] + ('...' if len(q['endpoint']) > 40 else '')
+                    lines.append(f"| {q['service']} | `{ep}` | {q['sensitivity']} | {status} |")
+                if len(self.api_queries) > 15:
+                    lines.append(f"| ... and {len(self.api_queries) - 15} more | | | |")
+                lines.append("")
+            
             # Blocked attempts
             if self.blocked_attempts:
                 lines.append(f"## 🛡️ Blocked Attempts ({len(self.blocked_attempts)})\n")
@@ -1173,114 +1203,6 @@ class SessionTransparencyTracker:
             return f"{size / 1024:.1f} KB"
         else:
             return f"{size / (1024*1024):.1f} MB"
-
-
-# =============================================================================
-# FAMILY ROLE-BASED ACCESS CONTROL
-# =============================================================================
-
-class FamilyMember:
-    """Represents a family member with specific permissions."""
-    
-    def __init__(self, name: str, role: str, pin: str = None):
-        self.name = name
-        self.role = role  # 'admin', 'adult', 'teen', 'child'
-        self.pin_hash = hashlib.sha256(pin.encode()).hexdigest() if pin else None
-    
-    def verify_pin(self, pin: str) -> bool:
-        if not self.pin_hash:
-            return True
-        return hmac.compare_digest(
-            self.pin_hash, 
-            hashlib.sha256(pin.encode()).hexdigest()
-        )
-
-
-class FamilyAccessControl:
-    """Role-based access control for family home server."""
-    
-    ROLE_PERMISSIONS = {
-        'admin': {
-            'can_approve': {'COMMAND', 'READ', 'WRITE', 'DELETE', 'LIST'},
-            'can_access_sensitive': {'financial', 'credentials', 'personal', 'family', 'security', 'work'},
-            'requires_pin_for': set(),  # No PIN required
-        },
-        'adult': {
-            'can_approve': {'COMMAND', 'READ', 'WRITE', 'LIST'},  # No DELETE
-            'can_access_sensitive': {'family', 'security'},
-            'requires_pin_for': {'financial', 'credentials'},
-        },
-        'teen': {
-            'can_approve': {'READ', 'WRITE', 'LIST'},  # No COMMAND, DELETE
-            'can_access_sensitive': {'family'},
-            'requires_pin_for': {'security'},
-        },
-        'child': {
-            'can_approve': {'READ', 'LIST'},  # Read and list only
-            'can_access_sensitive': set(),
-            'requires_pin_for': set(),  # Can't access sensitive anyway
-        },
-    }
-    
-    def __init__(self):
-        self.members: Dict[str, FamilyMember] = {}
-        self.active_sessions: Dict[str, str] = {}  # session_id -> member_name
-    
-    def add_member(self, name: str, role: str, pin: str = None):
-        if role not in self.ROLE_PERMISSIONS:
-            raise ValueError(f"Invalid role: {role}")
-        self.members[name.lower()] = FamilyMember(name, role, pin)
-    
-    def authenticate(self, name: str, pin: str = None) -> Optional[str]:
-        """Authenticate and return session token."""
-        member = self.members.get(name.lower())
-        if not member:
-            return None
-        if not member.verify_pin(pin or ""):
-            return None
-        
-        session_id = secrets.token_hex(16)
-        self.active_sessions[session_id] = member.name
-        return session_id
-    
-    def get_member_for_session(self, session_id: str) -> Optional[FamilyMember]:
-        name = self.active_sessions.get(session_id)
-        if not name:
-            return None
-        return self.members.get(name.lower())
-    
-    def can_approve(self, session_id: str, action_type: str) -> Tuple[bool, str]:
-        """Check if session can approve action type."""
-        member = self.get_member_for_session(session_id)
-        if not member:
-            return False, "Session not authenticated"
-        
-        perms = self.ROLE_PERMISSIONS.get(member.role, {})
-        can_approve = perms.get('can_approve', set())
-        
-        if action_type in can_approve:
-            return True, "Allowed"
-        return False, f"{member.role.title()}s cannot approve {action_type} actions"
-    
-    def can_access_sensitive(self, session_id: str, sensitivity_category: str, 
-                            pin: str = None) -> Tuple[bool, str]:
-        """Check if session can access sensitive data category."""
-        member = self.get_member_for_session(session_id)
-        if not member:
-            return False, "Session not authenticated"
-        
-        perms = self.ROLE_PERMISSIONS.get(member.role, {})
-        can_access = perms.get('can_access_sensitive', set())
-        requires_pin = perms.get('requires_pin_for', set())
-        
-        if sensitivity_category not in can_access and sensitivity_category not in requires_pin:
-            return False, f"{member.role.title()}s cannot access {sensitivity_category} data"
-        
-        if sensitivity_category in requires_pin:
-            if not pin or not member.verify_pin(pin):
-                return False, f"PIN required for {sensitivity_category} data"
-        
-        return True, "Allowed"
 
 
 # =============================================================================
@@ -1434,6 +1356,20 @@ class SmartHomeConfigAnalyzer:
                     code_snippet=img[:80],
                     cwe_id='CWE-829'
                 ))
+            
+            # M-7 FIX: Warn if a trusted image lacks digest pinning.
+            # Without @sha256:... a compromised image on a trusted registry
+            # would pass the registry-domain check silently.
+            if self._is_trusted_image(img) and '@sha256:' not in img:
+                self.findings.append(SecurityFinding(
+                    severity=Severity.LOW,
+                    category='IMAGE_NO_DIGEST',
+                    message=f'Docker image without digest pinning: {img}. '
+                            f'Consider using image@sha256:... for supply-chain safety.',
+                    line=None,
+                    code_snippet=img[:80],
+                    cwe_id='CWE-829'
+                ))
         
         return self.findings
     
@@ -1492,239 +1428,416 @@ class SmartHomeConfigAnalyzer:
         return "\n".join(lines)
 
 
-# =============================================================================
-# DOCKER COMPOSE GENERATOR (SECURE)
-# =============================================================================
+# HOME ASSISTANT NOTIFICATION BRIDGE
+# ============================================================================
 
-class SecureDockerComposeGenerator:
+class HomeAssistantNotificationBridge:
+    """Bridge between Home Assistant automations and the AIOHAI user interface.
+    
+    Runs a lightweight HTTP server on localhost that receives webhook
+    notifications from HA automations and routes them to the AIOHAI
+    AlertManager for desktop notification display.
+    
+    Also provides a snapshot proxy endpoint that securely fetches
+    camera snapshots from Frigate NVR without exposing Frigate directly.
     """
-    Generates secure docker-compose configurations with proper network isolation.
+    
+    def __init__(self, alert_manager=None, port: int = 11436,
+                 frigate_host: str = '127.0.0.1', frigate_port: int = 5000):
+        self.alert_manager = alert_manager
+        self.port = port
+        self.frigate_host = frigate_host
+        self.frigate_port = frigate_port
+        self.notification_log: List[Dict] = []
+        self.max_log_size = 500
+        self._server = None
+        self._thread = None
+        self.logger = logging.getLogger('aiohai.notification_bridge')
+    
+    def start(self):
+        """Start the notification bridge HTTP server."""
+        import http.server
+        bridge = self
+        
+        class BridgeHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                bridge.logger.debug(f"Bridge HTTP: {format % args}")
+            
+            def do_POST(self):
+                if self.path == '/webhook/notify':
+                    self._handle_notification()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def do_GET(self):
+                if self.path.startswith('/snapshot/'):
+                    self._handle_snapshot()
+                elif self.path == '/notifications':
+                    self._handle_list_notifications()
+                elif self.path == '/health':
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'status': 'ok'}).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def _handle_notification(self):
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    if content_length > 65536:  # 64KB max
+                        self.send_response(413)
+                        self.end_headers()
+                        return
+                    
+                    body = self.rfile.read(content_length)
+                    data = json.loads(body.decode('utf-8'))
+                    
+                    # Validate required fields
+                    title = str(data.get('title', 'Home Assistant'))[:200]
+                    message = str(data.get('message', ''))[:1000]
+                    severity = str(data.get('severity', 'info')).lower()
+                    source = str(data.get('source', 'homeassistant'))[:100]
+                    camera = str(data.get('camera', ''))[:50]
+                    
+                    # Log the notification
+                    entry = {
+                        'timestamp': datetime.now().isoformat(),
+                        'title': title,
+                        'message': message,
+                        'severity': severity,
+                        'source': source,
+                        'camera': camera,
+                    }
+                    bridge.notification_log.append(entry)
+                    if len(bridge.notification_log) > bridge.max_log_size:
+                        bridge.notification_log = bridge.notification_log[-bridge.max_log_size:]
+                    
+                    # Route to AlertManager if available
+                    if bridge.alert_manager:
+                        try:
+                            from proxy.aiohai_proxy import AlertSeverity
+                            sev_map = {
+                                'info': AlertSeverity.INFO,
+                                'warning': AlertSeverity.WARNING,
+                                'high': AlertSeverity.HIGH,
+                                'critical': AlertSeverity.CRITICAL,
+                            }
+                            alert_sev = sev_map.get(severity, AlertSeverity.INFO)
+                            bridge.alert_manager.alert(
+                                alert_sev, f"HA_{source.upper()}",
+                                f"{title}: {message}",
+                                {'camera': camera} if camera else {}
+                            )
+                        except Exception as e:
+                            bridge.logger.warning(f"Alert routing failed: {e}")
+                    
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'status': 'received'}).encode())
+                    
+                except json.JSONDecodeError:
+                    self.send_response(400)
+                    self.end_headers()
+                except Exception as e:
+                    bridge.logger.error(f"Notification handling error: {e}")
+                    self.send_response(500)
+                    self.end_headers()
+            
+            def _handle_snapshot(self):
+                """Proxy a camera snapshot from Frigate."""
+                camera_name = self.path.split('/snapshot/', 1)[-1].strip('/')
+                
+                # Sanitize camera name - alphanumeric, underscore, hyphen only
+                if not re.match(r'^[a-zA-Z0-9_-]+$', camera_name):
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                
+                try:
+                    frigate_url = (f"http://{bridge.frigate_host}:{bridge.frigate_port}"
+                                   f"/api/{camera_name}/latest.jpg")
+                    
+                    req = urllib.request.Request(frigate_url)
+                    req.add_header('Host', f'{bridge.frigate_host}:{bridge.frigate_port}')
+                    
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = resp.read(5 * 1024 * 1024)  # 5MB max
+                        content_type = resp.headers.get('Content-Type', 'image/jpeg')
+                    
+                    self.send_response(200)
+                    self.send_header('Content-Type', content_type)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    
+                except urllib.error.HTTPError as e:
+                    self.send_response(e.code)
+                    self.end_headers()
+                except Exception as e:
+                    bridge.logger.error(f"Snapshot proxy error: {e}")
+                    self.send_response(502)
+                    self.end_headers()
+            
+            def _handle_list_notifications(self):
+                """Return recent notifications as JSON."""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(bridge.notification_log[-50:]).encode())
+        
+        # Validate localhost-only binding
+        listen_host = '127.0.0.1'
+        
+        try:
+            self._server = http.server.HTTPServer((listen_host, self.port), BridgeHandler)
+            self._thread = threading.Thread(
+                target=self._server.serve_forever,
+                name='aiohai-notification-bridge',
+                daemon=True
+            )
+            self._thread.start()
+            self.logger.info(f"Notification bridge started on {listen_host}:{self.port}")
+        except OSError as e:
+            self.logger.error(f"Failed to start notification bridge: {e}")
+    
+    def stop(self):
+        """Stop the notification bridge."""
+        if self._server:
+            self._server.shutdown()
+            self._server.server_close()  # Close the socket properly
+            self._server = None
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+
+# ============================================================================
+# SMART HOME STACK DETECTOR
+# ============================================================================
+
+class SmartHomeStackDetector:
+    """Detects the current state of the smart home stack on the local system.
+    
+    Checks for Docker, Home Assistant, Frigate NVR, and Mosquitto MQTT
+    installations and generates a context block for the system prompt.
+    
+    Deployment states:
+      - not_deployed: No containers or config files found
+      - partial: Some components found but not all running
+      - running: All detected components are running
+      - stopped: Components exist but containers are stopped
     """
     
-    @staticmethod
-    def generate_home_assistant_stack(
-        config_path: str,
-        media_path: str,
-        frigate_path: str,
-        camera_ips: List[str],
-        timezone: str = "America/Los_Angeles"
-    ) -> str:
-        """Generate a network-isolated docker-compose for Home Assistant + Frigate."""
+    def __init__(self, base_dir: str = None):
+        self.base_dir = Path(base_dir) if base_dir else Path(os.environ.get('AIOHAI_HOME', r'C:\AIOHAI'))
+        self.logger = logging.getLogger('aiohai.stack_detector')
+        self._cache = None
+        self._cache_time = 0
+        self._cache_ttl = 60  # seconds
+    
+    def detect(self) -> Dict:
+        """Run full detection and return results."""
+        now = time.time()
+        if self._cache and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
         
-        # Build allowed IPs for firewall rules
-        camera_subnet = ".".join(camera_ips[0].split(".")[:3]) + ".0/24" if camera_ips else "192.168.1.0/24"
+        result = {
+            'docker_installed': False,
+            'docker_version': None,
+            'containers': {},
+            'config_files': {},
+            'services': {},
+            'deployment_state': 'not_deployed',
+            'cameras': [],
+        }
         
-        compose = f'''version: '3.8'
-
-# ============================================================================
-# SECURE HOME ASSISTANT + FRIGATE STACK
-# Generated by AIOHAI with network isolation
-# ============================================================================
-
-services:
-  # --------------------------------------------------------------------------
-  # HOME ASSISTANT
-  # --------------------------------------------------------------------------
-  homeassistant:
-    container_name: homeassistant
-    image: ghcr.io/home-assistant/home-assistant:stable
-    restart: unless-stopped
-    
-    # Use bridge network instead of host for isolation
-    networks:
-      home_automation:
-        ipv4_address: 172.30.0.10
-    
-    ports:
-      - "8123:8123"      # Web UI - bound to localhost only below
-    
-    volumes:
-      - {config_path}:/config
-      - {media_path}:/media
-      - /etc/localtime:/etc/localtime:ro
-    
-    environment:
-      - TZ={timezone}
-    
-    # Security: Don't run as privileged unless absolutely necessary
-    # privileged: false  # Uncomment if you don't need USB/Bluetooth
-    
-    depends_on:
-      - frigate
-
-  # --------------------------------------------------------------------------
-  # FRIGATE NVR
-  # --------------------------------------------------------------------------
-  frigate:
-    container_name: frigate
-    image: ghcr.io/blakeblackshear/frigate:stable
-    restart: unless-stopped
-    
-    shm_size: "256mb"
-    
-    networks:
-      home_automation:
-        ipv4_address: 172.30.0.20
-      cameras:  # Separate network for camera access
-        ipv4_address: 172.31.0.20
-    
-    ports:
-      - "127.0.0.1:5000:5000"    # Web UI - localhost only
-      - "127.0.0.1:8554:8554"    # RTSP - localhost only
-      - "127.0.0.1:8555:8555"    # WebRTC - localhost only
-    
-    volumes:
-      - {frigate_path}/config.yml:/config/config.yml:ro
-      - {frigate_path}/storage:/media/frigate
-      - type: tmpfs
-        target: /tmp/cache
-        tmpfs:
-          size: 1000000000
-    
-    environment:
-      - TZ={timezone}
-
-  # --------------------------------------------------------------------------
-  # NETWORK FIREWALL (Optional - adds egress filtering)
-  # --------------------------------------------------------------------------
-  # Uncomment to add strict egress control
-  # firewall:
-  #   container_name: firewall
-  #   image: alpine:latest
-  #   network_mode: host
-  #   cap_add:
-  #     - NET_ADMIN
-  #   command: >
-  #     sh -c "
-  #       iptables -I DOCKER-USER -s 172.30.0.0/16 -d {camera_subnet} -j ACCEPT &&
-  #       iptables -I DOCKER-USER -s 172.30.0.0/16 -d 172.30.0.0/16 -j ACCEPT &&
-  #       iptables -I DOCKER-USER -s 172.30.0.0/16 -j DROP &&
-  #       tail -f /dev/null
-  #     "
-
-# ============================================================================
-# NETWORKS
-# ============================================================================
-networks:
-  home_automation:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.30.0.0/24
-          gateway: 172.30.0.1
-    driver_opts:
-      com.docker.network.bridge.enable_icc: "true"
-  
-  cameras:
-    driver: macvlan
-    driver_opts:
-      parent: eth0  # Change to your network interface
-    ipam:
-      config:
-        - subnet: {camera_subnet}
-          gateway: {".".join(camera_ips[0].split(".")[:3]) + ".1" if camera_ips else "192.168.1.1"}
-
-# ============================================================================
-# SECURITY NOTES:
-# - Containers use isolated bridge networks, not host networking
-# - Frigate web ports bound to localhost only (127.0.0.1)
-# - Camera network is separate from home automation network
-# - Uncomment firewall service for strict egress control
-# ============================================================================
-'''
-        return compose
-    
-    @staticmethod
-    def generate_secure_frigate_config(
-        cameras: Dict[str, str],  # name -> IP
-        password_placeholder: str = "YOUR_PASSWORD",
-        retention_days: int = 14,
-        event_retention_days: int = 30
-    ) -> str:
-        """Generate secure Frigate config without external endpoints."""
+        # Check Docker
+        try:
+            docker_check = subprocess.run(
+                ['docker', 'version', '--format', '{{.Server.Version}}'],
+                capture_output=True, text=True, timeout=10
+            )
+            if docker_check.returncode == 0:
+                result['docker_installed'] = True
+                result['docker_version'] = docker_check.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
         
-        camera_configs = ""
-        for name, ip in cameras.items():
-            safe_name = re.sub(r'[^a-z0-9_]', '_', name.lower())
-            camera_configs += f'''
-  {safe_name}:
-    ffmpeg:
-      inputs:
-        - path: rtsp://admin:{password_placeholder}@{ip}:554/h264Preview_01_main
-          roles:
-            - detect
-            - record
-    detect:
-      enabled: true
-      width: 1280
-      height: 720
-    record:
-      enabled: true
-    snapshots:
-      enabled: true
-'''
+        if not result['docker_installed']:
+            self._cache = result
+            self._cache_time = now
+            return result
         
-        config = f'''# ============================================================================
-# FRIGATE NVR CONFIGURATION
-# Generated by AIOHAI - No external endpoints
-# ============================================================================
-
-# MQTT disabled - no external data transmission
-mqtt:
-  enabled: false
-
-# Database stored locally
-database:
-  path: /media/frigate/frigate.db
-
-# Recording settings
-record:
-  enabled: true
-  retain:
-    days: {retention_days}
-    mode: motion
-  events:
-    retain:
-      default: {event_retention_days}
-      mode: active_objects
-
-# Snapshots
-snapshots:
-  enabled: true
-  retain:
-    default: {event_retention_days}
-
-# Detection settings
-detect:
-  enabled: true
-  fps: 5
-
-# Objects to track
-objects:
-  track:
-    - person
-    - car
-    - dog
-    - cat
-  filters:
-    person:
-      min_score: 0.5
-      threshold: 0.7
-
-# ============================================================================
-# CAMERAS
-# ============================================================================
-cameras:{camera_configs}
-
-# ============================================================================
-# SECURITY NOTES:
-# - MQTT is disabled (no external broker communication)
-# - All recordings stored locally in /media/frigate
-# - No webhooks or external notifications configured
-# - Replace {password_placeholder} with your camera password
-# ============================================================================
-'''
-        return config
+        # Check for known containers
+        try:
+            ps_result = subprocess.run(
+                ['docker', 'ps', '-a', '--format', '{{.Names}}|{{.Status}}|{{.Image}}'],
+                capture_output=True, text=True, timeout=10
+            )
+            if ps_result.returncode == 0:
+                known_containers = {
+                    'homeassistant': ['homeassistant', 'home-assistant', 'hass'],
+                    'frigate': ['frigate'],
+                    'mosquitto': ['mosquitto', 'mqtt', 'eclipse-mosquitto'],
+                }
+                for line in ps_result.stdout.strip().split('\n'):
+                    if not line.strip():
+                        continue
+                    parts = line.split('|', 2)
+                    if len(parts) < 3:
+                        continue
+                    name, status, image = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                    name_lower = name.lower()
+                    
+                    for service, patterns in known_containers.items():
+                        if any(p in name_lower or p in image.lower() for p in patterns):
+                            is_running = status.lower().startswith('up')
+                            result['containers'][service] = {
+                                'name': name,
+                                'status': 'running' if is_running else 'stopped',
+                                'image': image,
+                            }
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.logger.warning(f"Docker ps failed: {e}")
+        
+        # Scan for config files
+        search_dirs = [
+            self.base_dir,
+            self.base_dir / 'homeassistant',
+            self.base_dir / 'frigate',
+            Path.home() / 'homeassistant',
+            Path.home() / 'frigate',
+        ]
+        
+        config_patterns = {
+            'ha_config': ['configuration.yaml'],
+            'frigate_config': ['config.yml', 'frigate.yml'],
+            'docker_compose': ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'],
+        }
+        
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            try:
+                for config_type, filenames in config_patterns.items():
+                    if config_type in result['config_files']:
+                        continue
+                    for fn in filenames:
+                        candidate = search_dir / fn
+                        if candidate.exists():
+                            result['config_files'][config_type] = str(candidate)
+                            
+                            # Parse cameras from Frigate config
+                            if config_type == 'frigate_config':
+                                result['cameras'] = self._parse_frigate_cameras(candidate)
+            except PermissionError:
+                continue
+        
+        # Check service health via HTTP
+        service_checks = {
+            'frigate': ('127.0.0.1', 5000, '/api/version'),
+            'homeassistant': ('127.0.0.1', 8123, '/api/config'),
+        }
+        
+        for svc_name, (host, port, path) in service_checks.items():
+            try:
+                url = f"http://{host}:{port}{path}"
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status == 200:
+                        result['services'][svc_name] = 'healthy'
+                    else:
+                        result['services'][svc_name] = f'http_{resp.status}'
+            except Exception:
+                result['services'][svc_name] = 'unreachable'
+        
+        # Classify deployment state
+        has_containers = len(result['containers']) > 0
+        has_configs = len(result['config_files']) > 0
+        all_running = all(
+            c['status'] == 'running' for c in result['containers'].values()
+        ) if has_containers else False
+        
+        if not has_containers and not has_configs:
+            result['deployment_state'] = 'not_deployed'
+        elif all_running and has_containers:
+            result['deployment_state'] = 'running'
+        elif has_containers and not all_running:
+            result['deployment_state'] = 'stopped'
+        else:
+            result['deployment_state'] = 'partial'
+        
+        self._cache = result
+        self._cache_time = now
+        return result
+    
+    def _parse_frigate_cameras(self, config_path: Path) -> List[str]:
+        """Parse camera names from Frigate config (simple regex, no YAML dep)."""
+        cameras = []
+        try:
+            content = config_path.read_text(encoding='utf-8')
+            in_cameras = False
+            indent_level = None
+            
+            for line in content.split('\n'):
+                stripped = line.strip()
+                if stripped == 'cameras:':
+                    in_cameras = True
+                    indent_level = len(line) - len(line.lstrip())
+                    continue
+                
+                if in_cameras and stripped and not stripped.startswith('#'):
+                    current_indent = len(line) - len(line.lstrip())
+                    if current_indent <= indent_level and stripped != '':
+                        break  # Exited cameras section
+                    
+                    if current_indent == indent_level + 2 and stripped.endswith(':'):
+                        cam_name = stripped.rstrip(':').strip()
+                        if re.match(r'^[a-zA-Z0-9_-]+$', cam_name):
+                            cameras.append(cam_name)
+        except Exception as e:
+            self.logger.warning(f"Failed to parse Frigate cameras: {e}")
+        
+        return cameras
+    
+    def get_context_block(self) -> str:
+        """Generate a context block for system prompt injection."""
+        status = self.detect()
+        
+        lines = [
+            '[SMART_HOME_STATUS]',
+            f'deployment_state: {status["deployment_state"]}',
+            f'docker_installed: {status["docker_installed"]}',
+        ]
+        
+        if status['docker_version']:
+            lines.append(f'docker_version: {status["docker_version"]}')
+        
+        if status['containers']:
+            lines.append('containers:')
+            for svc, info in status['containers'].items():
+                lines.append(f'  {svc}: {info["status"]} ({info["image"]})')
+        
+        if status['config_files']:
+            lines.append('config_files:')
+            for cfg_type, path in status['config_files'].items():
+                lines.append(f'  {cfg_type}: {path}')
+        
+        if status['cameras']:
+            lines.append(f'cameras: {", ".join(status["cameras"])}')
+        
+        if status['services']:
+            lines.append('service_health:')
+            for svc, health in status['services'].items():
+                lines.append(f'  {svc}: {health}')
+        
+        lines.append('[/SMART_HOME_STATUS]')
+        
+        return '\n'.join(lines)
 
 
 class MultiStageDetector:
@@ -1772,3 +1885,395 @@ class MultiStageDetector:
                 return f"Multiple credential path access attempts: {cred_attempts}"
             
             return None
+
+
+# =============================================================================
+# OFFICE STACK DETECTOR
+# =============================================================================
+
+class OfficeStackDetector:
+    """
+    Auto-detect installed Microsoft Office applications, Python Office libraries,
+    COM availability, and Graph API configuration.
+    
+    Generates an [OFFICE_STATUS] context block injected into the system prompt
+    so the local model knows what capabilities are available.
+    """
+    
+    # Python libraries to probe
+    PYTHON_LIBS = {
+        'python_docx': 'docx',
+        'openpyxl': 'openpyxl',
+        'python_pptx': 'pptx',
+        'comtypes': 'comtypes',
+    }
+    
+    # Office executables to search for (Windows)
+    OFFICE_APPS = {
+        'word': ['WINWORD.EXE', 'winword'],
+        'excel': ['EXCEL.EXE', 'excel'],
+        'powerpoint': ['POWERPNT.EXE', 'powerpnt'],
+    }
+    
+    # Common Office install paths on Windows
+    OFFICE_PATHS = [
+        r'C:\Program Files\Microsoft Office',
+        r'C:\Program Files (x86)\Microsoft Office',
+        r'C:\Program Files\Microsoft Office 15',
+        r'C:\Program Files\Microsoft Office 16',
+    ]
+    
+    def __init__(self, base_dir: str = None, cache_ttl: int = 120):
+        if base_dir:
+            self.base_dir = Path(base_dir)
+        elif os.environ.get('AIOHAI_HOME'):
+            self.base_dir = Path(os.environ['AIOHAI_HOME'])
+        else:
+            self.base_dir = Path(os.path.expanduser('~'))
+        
+        self._cache = None
+        self._cache_time = 0
+        self._cache_ttl = cache_ttl
+        self.logger = logging.getLogger('aiohai.office_detector')
+    
+    def detect(self) -> Dict:
+        """Run full detection and return status dict."""
+        now = time.time()
+        if self._cache and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
+        
+        result = {
+            'detection_state': 'not_available',
+            'libraries': {},
+            'office_apps': {},
+            'document_directories': {},
+            'graph_api': {'configured': False},
+            'platform': sys.platform,
+        }
+        
+        # Detect Python libraries
+        lib_count = 0
+        for display_name, import_name in self.PYTHON_LIBS.items():
+            try:
+                mod = __import__(import_name)
+                version = getattr(mod, '__version__', 'unknown')
+                result['libraries'][display_name] = {
+                    'installed': True,
+                    'version': version,
+                }
+                lib_count += 1
+            except ImportError:
+                result['libraries'][display_name] = {
+                    'installed': False,
+                    'version': None,
+                }
+        
+        # Detect Office applications (Windows only)
+        if sys.platform == 'win32':
+            result['office_apps'] = self._detect_office_windows()
+        else:
+            for app in self.OFFICE_APPS:
+                result['office_apps'][app] = {
+                    'installed': False,
+                    'version': None,
+                    'note': 'Office app detection is Windows-only',
+                }
+        
+        # Detect document directories
+        result['document_directories'] = self._detect_doc_dirs()
+        
+        # Detect Graph API configuration
+        result['graph_api'] = self._detect_graph_config()
+        
+        # Determine overall state
+        core_libs = ['python_docx', 'openpyxl', 'python_pptx']
+        core_installed = sum(1 for lib in core_libs
+                            if result['libraries'].get(lib, {}).get('installed'))
+        
+        if core_installed == len(core_libs):
+            result['detection_state'] = 'ready'
+        elif core_installed > 0:
+            result['detection_state'] = 'partial'
+        else:
+            result['detection_state'] = 'not_available'
+        
+        self._cache = result
+        self._cache_time = now
+        self.logger.info(f"Office detection: {result['detection_state']} "
+                         f"({core_installed}/{len(core_libs)} core libs)")
+        return result
+    
+    def _detect_office_windows(self) -> Dict:
+        """Detect Office apps on Windows via registry or file search."""
+        apps = {}
+        for app_name, exe_names in self.OFFICE_APPS.items():
+            found = False
+            for search_path in self.OFFICE_PATHS:
+                p = Path(search_path)
+                if p.exists():
+                    for exe in exe_names:
+                        matches = list(p.rglob(exe))
+                        if matches:
+                            version = self._get_office_version(matches[0])
+                            apps[app_name] = {
+                                'installed': True,
+                                'version': version,
+                                'path': str(matches[0]),
+                            }
+                            found = True
+                            break
+                if found:
+                    break
+            if not found:
+                apps[app_name] = {'installed': False, 'version': None}
+        return apps
+    
+    def _get_office_version(self, exe_path: Path) -> str:
+        """Extract Office version from the executable path."""
+        path_str = str(exe_path)
+        # Try to extract version from path (e.g., Office16, Office15)
+        for marker in ['Office16', 'Office15', 'Office14', 'Office12']:
+            if marker in path_str:
+                version_map = {
+                    'Office16': '16.x (2016/2019/365)',
+                    'Office15': '15.x (2013)',
+                    'Office14': '14.x (2010)',
+                    'Office12': '12.x (2007)',
+                }
+                return version_map.get(marker, 'unknown')
+        return 'unknown'
+    
+    def _detect_doc_dirs(self) -> Dict:
+        """Find standard document directories."""
+        dirs = {}
+        home = Path.home()
+        
+        candidates = {
+            'documents': [home / 'Documents', home / 'My Documents'],
+            'desktop': [home / 'Desktop'],
+            'downloads': [home / 'Downloads'],
+        }
+        
+        for name, paths in candidates.items():
+            for p in paths:
+                if p.exists():
+                    dirs[name] = str(p)
+                    break
+            else:
+                dirs[name] = None
+        
+        return dirs
+    
+    def _detect_graph_config(self) -> Dict:
+        """Check if Microsoft Graph API is configured."""
+        config = {
+            'configured': False,
+            'tenant_id': None,
+            'client_id': None,
+            'scopes': [],
+        }
+        
+        # Check for config file
+        graph_config = self.base_dir / 'config' / 'graph_api.json'
+        if graph_config.exists():
+            try:
+                with open(graph_config) as f:
+                    data = json.load(f)
+                config['configured'] = bool(data.get('tenant_id') and data.get('client_id'))
+                config['tenant_id'] = '[set]' if data.get('tenant_id') else '[not set]'
+                config['client_id'] = '[set]' if data.get('client_id') else '[not set]'
+                config['scopes'] = data.get('scopes', [])
+            except (json.JSONDecodeError, OSError):
+                pass
+        
+        # Also check environment variables
+        if os.environ.get('AIOHAI_GRAPH_TENANT_ID'):
+            config['configured'] = True
+            config['tenant_id'] = '[set via env]'
+        
+        return config
+    
+    def get_context_block(self) -> str:
+        """Generate the [OFFICE_STATUS] block for system prompt injection."""
+        status = self.detect()
+        
+        lines = ['## [OFFICE_STATUS]']
+        lines.append(f"detection_state: {status['detection_state']}")
+        
+        lines.append('libraries:')
+        for lib, info in status['libraries'].items():
+            if info['installed']:
+                lines.append(f"  {lib}: installed ({info['version']})")
+            else:
+                if lib == 'comtypes' and sys.platform != 'win32':
+                    lines.append(f"  {lib}: not_applicable (linux)")
+                else:
+                    lines.append(f"  {lib}: not_installed")
+        
+        lines.append('office_apps:')
+        for app, info in status['office_apps'].items():
+            if info['installed']:
+                lines.append(f"  {app}: installed ({info.get('version', 'unknown')})")
+            else:
+                lines.append(f"  {app}: not_found")
+        
+        lines.append('document_directories:')
+        for name, path in status['document_directories'].items():
+            if path:
+                lines.append(f"  {name}: {path}")
+            else:
+                lines.append(f"  {name}: not_found")
+        
+        graph = status['graph_api']
+        lines.append('graph_api:')
+        lines.append(f"  configured: {str(graph['configured']).lower()}")
+        if graph['configured']:
+            lines.append(f"  tenant_id: {graph['tenant_id']}")
+            lines.append(f"  scopes: {', '.join(graph['scopes']) if graph['scopes'] else 'none'}")
+        
+        lines.append('## [/OFFICE_STATUS]')
+        return '\n'.join(lines)
+
+
+# =============================================================================
+# DOCUMENT AUDIT LOGGER
+# =============================================================================
+
+class DocumentAuditLogger:
+    """
+    Audit trail for all document operations.
+    
+    Tracks reads, writes, creates, modifications, conversions, and uploads
+    with content hashes and PII scan results.
+    """
+    
+    def __init__(self, log_dir: Path = None, retention_days: int = 30,
+                 log_content_hashes: bool = True):
+        if log_dir:
+            self.log_dir = Path(log_dir)
+        else:
+            home = os.environ.get('AIOHAI_HOME', os.path.expanduser('~'))
+            self.log_dir = Path(home) / 'logs' / 'document_audit'
+        
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.retention_days = retention_days
+        self.log_content_hashes = log_content_hashes
+        self._lock = threading.Lock()
+        self.logger = logging.getLogger('aiohai.doc_audit')
+        
+        # In-memory recent operations (last 100)
+        self._recent: List[Dict] = []
+        self._max_recent = 100
+    
+    def log_operation(self, operation: str, file_path: str,
+                      file_type: str = '', details: Dict = None,
+                      content_hash: str = '', pii_findings: List = None,
+                      metadata_stripped: bool = False) -> Dict:
+        """
+        Log a document operation.
+        
+        Args:
+            operation: CREATE, READ, MODIFY, CONVERT, UPLOAD, DELETE
+            file_path: Path to the document
+            file_type: Extension (.docx, .xlsx, .pptx, etc.)
+            details: Additional operation details
+            content_hash: SHA-256 of first 1024 bytes (for fingerprinting)
+            pii_findings: List of PII findings from scanner
+            metadata_stripped: Whether metadata was sanitized
+        
+        Returns:
+            The logged entry dict.
+        """
+        entry = {
+            'timestamp': datetime.now().isoformat(),
+            'operation': operation,
+            'file_path': self._sanitize_path(file_path),
+            'file_type': file_type or self._get_ext(file_path),
+            'content_hash': content_hash,
+            'pii_findings_count': len(pii_findings) if pii_findings else 0,
+            'pii_categories': list(set(f.get('type', 'unknown')
+                                       for f in (pii_findings or []))),
+            'metadata_stripped': metadata_stripped,
+            'details': details or {},
+        }
+        
+        with self._lock:
+            # Write to daily log file
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            log_file = self.log_dir / f'doc_audit_{date_str}.jsonl'
+            try:
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(entry) + '\n')
+            except OSError as e:
+                self.logger.error(f"Failed to write audit log: {e}")
+            
+            # Add to in-memory recent
+            self._recent.append(entry)
+            if len(self._recent) > self._max_recent:
+                self._recent = self._recent[-self._max_recent:]
+        
+        self.logger.info(f"DOC_AUDIT: {operation} | {entry['file_type']} | "
+                         f"PII: {entry['pii_findings_count']}")
+        return entry
+    
+    def hash_content(self, content: bytes, max_bytes: int = 1024) -> str:
+        """Generate a content fingerprint hash."""
+        if not self.log_content_hashes:
+            return ''
+        return hashlib.sha256(content[:max_bytes]).hexdigest()
+    
+    def get_recent(self, count: int = 20) -> List[Dict]:
+        """Get recent operations."""
+        with self._lock:
+            return list(self._recent[-count:])
+    
+    def get_stats(self) -> Dict:
+        """Get operation statistics from recent history."""
+        with self._lock:
+            ops = {}
+            types = {}
+            pii_total = 0
+            for entry in self._recent:
+                op = entry['operation']
+                ops[op] = ops.get(op, 0) + 1
+                ft = entry['file_type']
+                types[ft] = types.get(ft, 0) + 1
+                pii_total += entry['pii_findings_count']
+            
+            return {
+                'total_operations': len(self._recent),
+                'by_operation': ops,
+                'by_file_type': types,
+                'total_pii_findings': pii_total,
+            }
+    
+    def cleanup_old_logs(self):
+        """Remove audit logs older than retention period."""
+        if self.retention_days <= 0:
+            return
+        
+        cutoff = datetime.now().timestamp() - (self.retention_days * 86400)
+        removed = 0
+        for log_file in self.log_dir.glob('doc_audit_*.jsonl'):
+            if log_file.stat().st_mtime < cutoff:
+                log_file.unlink()
+                removed += 1
+        
+        if removed:
+            self.logger.info(f"Cleaned up {removed} old audit log files")
+    
+    def _sanitize_path(self, path: str) -> str:
+        """Remove user-identifying path components for logging."""
+        # Replace username in paths with <user>
+        parts = Path(path).parts
+        sanitized = []
+        for part in parts:
+            if part.lower() in ('users', 'home'):
+                sanitized.append(part)
+                continue
+            sanitized.append(part)
+        return str(Path(*sanitized)) if sanitized else path
+    
+    def _get_ext(self, path: str) -> str:
+        """Extract file extension."""
+        return Path(path).suffix.lower()

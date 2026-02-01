@@ -4,9 +4,10 @@
 from .security_components import (
     StaticSecurityAnalyzer, PIIProtector, ResourceLimiter,
     DualLLMVerifier, MultiStageDetector, ResourceLimitExceeded,
-    Severity, Verdict, SmartHomeConfigAnalyzer, SecureDockerComposeGenerator,
+    Severity, Verdict, SmartHomeConfigAnalyzer,
     CredentialRedactor, SensitiveOperationDetector, SessionTransparencyTracker,
-    FamilyAccessControl, FamilyMember
+    HomeAssistantNotificationBridge, SmartHomeStackDetector,
+    OfficeStackDetector, DocumentAuditLogger,
 )
 
 # HSM integration (optional - requires PyKCS11)
