@@ -439,6 +439,15 @@ DOH_SERVERS = [
     'doh.opendns.com', 'dns.adguard.com', 'doh.cleanbrowsing.org'
 ]
 
+# V-2 FIX: Allowed framework file names — shared between _load_frameworks
+# and IntegrityVerifier. Add new framework filenames here explicitly.
+ALLOWED_FRAMEWORK_NAMES = frozenset({
+    'ha_framework_v3.md',
+    'office_framework_v3.md',
+    'ha_framework_v4.md',
+    'office_framework_v4.md',
+})
+
 
 # =============================================================================
 # CONFIGURATION
@@ -762,6 +771,7 @@ class IntegrityVerifier:
         self.logger = logger
         self.alerts = alerts
         self.policy_hash = None
+        self.framework_hashes = {}  # V-2 FIX: {filename: hash} for framework files
         self.running = False
         self.thread = None
         self.lockdown = False  # Set True on tampering — blocks new requests
@@ -790,6 +800,8 @@ class IntegrityVerifier:
         if self.policy_hash is None:
             self.policy_hash = current
             self.logger.log_event("POLICY_LOADED", AlertSeverity.INFO, {'hash': current[:16]})
+            # V-2 FIX: Also hash framework files on first call
+            self._hash_frameworks()
             return True
         
         if current != self.policy_hash:
@@ -797,6 +809,54 @@ class IntegrityVerifier:
             self._enter_lockdown("Policy hash mismatch")
             return False
         
+        # V-2 FIX: Also verify framework hashes on every check
+        if not self._verify_frameworks():
+            return False
+        
+        return True
+    
+    def _hash_frameworks(self):
+        """V-2 FIX: Compute and store initial hashes for all allowed framework files."""
+        policy_dir = self.config.policy_file.parent
+        for fw_file in sorted(policy_dir.glob('*_framework_*.md')):
+            if fw_file.name in ALLOWED_FRAMEWORK_NAMES:
+                try:
+                    h = self.compute_hash(fw_file)
+                    self.framework_hashes[fw_file.name] = h
+                    self.logger.log_event("FRAMEWORK_HASH_RECORDED", AlertSeverity.INFO,
+                                          {'file': fw_file.name, 'hash': h[:16]})
+                except Exception as e:
+                    self.logger.log_event("FRAMEWORK_HASH_ERROR", AlertSeverity.WARNING,
+                                          {'file': fw_file.name, 'error': str(e)})
+    
+    def _verify_frameworks(self) -> bool:
+        """V-2 FIX: Verify framework file hashes haven't changed.
+        
+        Detects:
+        - Modified framework files (hash mismatch → lockdown)
+        - Deleted framework files that were present at startup (missing → lockdown)
+        - New framework files are handled by _load_frameworks allowlist (M-6)
+        """
+        policy_dir = self.config.policy_file.parent
+        for fname, expected_hash in self.framework_hashes.items():
+            fw_path = policy_dir / fname
+            if not fw_path.exists():
+                self.alerts.alert(AlertSeverity.CRITICAL, "FRAMEWORK_DELETED",
+                                  f"Framework file removed: {fname}")
+                self._enter_lockdown(f"Framework file deleted: {fname}")
+                return False
+            try:
+                current = self.compute_hash(fw_path)
+                if current != expected_hash:
+                    self.alerts.alert(AlertSeverity.CRITICAL, "FRAMEWORK_TAMPERING",
+                                      f"Framework modified: {fname}")
+                    self._enter_lockdown(f"Framework hash mismatch: {fname}")
+                    return False
+            except Exception as e:
+                self.alerts.alert(AlertSeverity.HIGH, "FRAMEWORK_VERIFY_ERROR",
+                                  f"Cannot verify {fname}: {e}")
+                self._enter_lockdown(f"Framework verification failed: {fname}")
+                return False
         return True
     
     def _enter_lockdown(self, reason: str):
@@ -2726,6 +2786,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
     transparency_tracker: 'SessionTransparencyTracker' = None
     credential_redactor: 'CredentialRedactor' = None
     sensitive_detector: 'SensitiveOperationDetector' = None
+    api_query_executor: 'LocalAPIQueryExecutor' = None  # V-1 FIX: Wire API_QUERY
+    graph_api_registry: 'GraphAPIRegistry' = None        # V-1 FIX: Wire Graph API
     ollama_breaker: OllamaCircuitBreaker = None  # M-8 FIX
     
     def log_message(self, format, *args):
@@ -3238,6 +3300,63 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         elif atype == 'DELETE':
             ok, out = self.executor.delete_file(target)
             return out
+        elif atype == 'API_QUERY':
+            # V-1 FIX: Route API_QUERY to LocalAPIQueryExecutor or Graph API.
+            method = (content or 'GET').strip().upper()
+            is_graph = target.lower().startswith('https://graph.microsoft.com')
+            
+            if is_graph:
+                # Graph API execution
+                if not self.graph_api_registry:
+                    return "❌ Graph API is not configured."
+                # Re-validate (defense in depth — config could change between
+                # approval creation and execution)
+                graph_path = target.split('graph.microsoft.com', 1)[-1]
+                if '/v1.0' in graph_path:
+                    graph_path = graph_path.split('/v1.0', 1)[-1]
+                elif '/beta' in graph_path:
+                    graph_path = graph_path.split('/beta', 1)[-1]
+                
+                allowed, tier_or_reason, _ = self.graph_api_registry.validate_request(
+                    method, graph_path)
+                if not allowed:
+                    self.logger.log_blocked("API_QUERY_GRAPH", target, tier_or_reason)
+                    return f"❌ Graph API blocked: {tier_or_reason}"
+                
+                # Execute via urllib (Graph API requires auth token — the LLM
+                # would need to include an Authorization header in the content.
+                # For now, execute as a simple HTTP request; full OAuth flow
+                # is a future enhancement.)
+                try:
+                    req = urllib.request.Request(target, method=method)
+                    req.add_header('Accept', 'application/json')
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = resp.read(10 * 1024 * 1024)  # 10MB cap
+                        text = data.decode('utf-8', errors='replace')
+                        if self.pii_protector:
+                            text = self.pii_protector.redact(text)
+                        self.logger.log_action("API_QUERY", target, "SUCCESS",
+                                               {'service': 'graph_api', 'bytes': len(data)})
+                        if self.transparency_tracker:
+                            self.transparency_tracker.record_api_query(
+                                'graph_api', target, success=True)
+                        return f"**Graph API Response:**\n```json\n{text}\n```"
+                except Exception as e:
+                    self.logger.log_action("API_QUERY", target, "ERROR",
+                                           {'error': str(e)})
+                    if self.transparency_tracker:
+                        self.transparency_tracker.record_api_query(
+                            'graph_api', target, success=False)
+                    return f"❌ Graph API error: {e}"
+            else:
+                # Local service execution via LocalAPIQueryExecutor
+                if not self.api_query_executor:
+                    return "❌ Local API query executor is not available."
+                ok, result = self.api_query_executor.execute(target, method=method)
+                if ok:
+                    return f"**API Response:**\n```\n{result}\n```"
+                else:
+                    return f"❌ API query failed: {result}"
         
         return f"⚠️ Unknown: {atype}"
     
@@ -3317,6 +3436,67 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                     )
                     continue
                 tier3_required = False
+                self._pending_pii_warning = None
+            elif atype == 'API_QUERY' and target:
+                # V-1 FIX: Pre-approval validation for API_QUERY actions.
+                # Validate against LocalServiceRegistry or GraphAPIRegistry
+                # before creating the approval card.
+                is_graph = target.lower().startswith('https://graph.microsoft.com')
+                
+                if is_graph:
+                    # Graph API: validate through GraphAPIRegistry
+                    if not self.graph_api_registry:
+                        self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                                                "Graph API not configured")
+                        lines.append(
+                            f"\n\n---\n### 🚫 Blocked: API_QUERY"
+                            f"\n\nGraph API is not configured. Enable it in config.json "
+                            f"under `office.graph_api`."
+                        )
+                        continue
+                    # Parse method from content (default GET)
+                    method = (content or 'GET').strip().upper()
+                    # Extract endpoint path after the base URL
+                    graph_path = target.split('graph.microsoft.com', 1)[-1]
+                    # e.g. "/v1.0/me/drive/root/children" → "/me/drive/root/children"
+                    if '/v1.0' in graph_path:
+                        graph_path = graph_path.split('/v1.0', 1)[-1]
+                    elif '/beta' in graph_path:
+                        graph_path = graph_path.split('/beta', 1)[-1]
+                    
+                    allowed, tier_or_reason, _ = self.graph_api_registry.validate_request(
+                        method, graph_path)
+                    if not allowed:
+                        self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                                                tier_or_reason)
+                        lines.append(
+                            f"\n\n---\n### 🚫 Blocked: API_QUERY"
+                            f"\n\nGraph API request rejected: **{tier_or_reason}**"
+                        )
+                        continue
+                    # Map Graph tier to FIDO2 requirement
+                    tier3_required = (tier_or_reason == 'TIER_3')
+                else:
+                    # Local service: validate through LocalServiceRegistry
+                    if not self.api_query_executor:
+                        self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                                                "Local API query executor not initialized")
+                        lines.append(
+                            f"\n\n---\n### 🚫 Blocked: API_QUERY"
+                            f"\n\nLocal API service queries are not available."
+                        )
+                        continue
+                    is_valid, svc_or_reason = self.api_query_executor.registry.validate_request(target)
+                    if not is_valid:
+                        self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                                                svc_or_reason)
+                        lines.append(
+                            f"\n\n---\n### 🚫 Blocked: API_QUERY"
+                            f"\n\nService query rejected: **{svc_or_reason}**"
+                        )
+                        continue
+                    tier3_required = False
+                
                 self._pending_pii_warning = None
             else:
                 tier3_required = False
@@ -3409,6 +3589,10 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             'DELETE': {
                 'icon': '🔴', 'verb': 'Permanently remove file or folder',
                 'desc': f"**⚠️ This action is irreversible!**\n\nDelete `{os.path.basename(target)}`",
+            },
+            'API_QUERY': {
+                'icon': '🌐', 'verb': 'Query a local or cloud service',
+                'desc': f"Send `{(content or 'GET').strip().upper()}` request to `{target}`",
             },
         }
         
@@ -3921,13 +4105,8 @@ class UnifiedSecureProxy:
         M-6 FIX: Only load from an explicit allowlist of known framework filenames
         to prevent prompt injection via rogue files dropped in the directory.
         """
-        # M-6 FIX: Allowlist of known framework files. Add new ones here explicitly.
-        ALLOWED_FRAMEWORK_NAMES = {
-            'ha_framework_v3.md',
-            'office_framework_v3.md',
-            'ha_framework_v4.md',
-            'office_framework_v4.md',
-        }
+        # M-6 FIX: Uses module-level ALLOWED_FRAMEWORK_NAMES constant
+        # (shared with IntegrityVerifier for consistent enforcement).
         
         policy_dir = self.config.policy_file.parent
         framework_files = sorted(policy_dir.glob('*_framework_*.md'))
@@ -4371,6 +4550,8 @@ class UnifiedSecureProxy:
         UnifiedProxyHandler.hsm_manager = self.hsm_manager
         UnifiedProxyHandler.fido2_client = self.fido2_client  # FIDO2 for TIER 3
         UnifiedProxyHandler.fido2_server = self.fido2_server
+        UnifiedProxyHandler.api_query_executor = self.api_query_executor  # V-1 FIX
+        UnifiedProxyHandler.graph_api_registry = self.graph_api_registry  # V-1 FIX
         UnifiedProxyHandler.integrity_verifier = self.integrity
         UnifiedProxyHandler.ollama_breaker = OllamaCircuitBreaker()  # M-8 FIX
         print("  ✓ Configured")

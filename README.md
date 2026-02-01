@@ -1,6 +1,6 @@
 # AIOHAI — AI-Operated Home & Office Intelligence Proxy
 
-**Version 3.0.1** · Security-First LLM Proxy for Local AI Agents
+**Version 3.0.2** · Security-First LLM Proxy for Local AI Agents
 
 ---
 
@@ -45,20 +45,35 @@ The proxy was designed for a specific threat model: you're running a capable loc
 ```
 C:\AIOHAI\                          (or $SECURE_LLM_HOME)
 ├── proxy/
-│   └── aiohai_proxy.py             Main proxy (~4,580 lines)
+│   └── aiohai_proxy.py             Main proxy (~4,760 lines)
 ├── security/
 │   ├── __init__.py                 Package init
 │   ├── security_components.py      Analysis engines (~2,280 lines)
-│   └── fido2_approval.py           FIDO2/WebAuthn server & client (~1,290 lines)
+│   ├── fido2_approval.py           FIDO2/WebAuthn server & client (~1,290 lines)
+│   └── hsm_integration.py          Nitrokey HSM PKCS#11 interface (~1,045 lines)
 ├── config/
-│   └── config.json                 Central configuration (~295 lines)
-├── tests/
-│   ├── test_ha_framework.py        Smart home framework tests
-│   └── test_office_framework.py    Office framework tests
+│   └── config.json                 Central configuration (~305 lines)
 ├── policy/
 │   ├── aiohai_security_policy_v3.0.md   Security policy (injected into LLM context)
 │   ├── ha_framework_v3.md               Home Assistant framework prompt
 │   └── office_framework_v3.md           Office framework prompt
+├── tests/
+│   ├── conftest.py                 Shared fixtures
+│   ├── test_security.py            Security unit tests
+│   ├── test_startup.py             Integration tests
+│   ├── test_e2e.py                 End-to-end pipeline tests
+│   ├── test_ha_framework.py        Smart home framework tests
+│   └── test_office_framework.py    Office framework tests
+├── tools/
+│   ├── aiohai_cli.py               Management CLI
+│   ├── register_devices.py         FIDO2 device registration wizard
+│   └── hsm_setup.py                HSM initialization tool
+├── docs/
+│   └── ARCHITECTURE.md             Architecture documentation
+├── web/
+│   └── templates/                  FIDO2 approval UI
+├── setup/
+│   └── Setup.ps1                   Windows installer
 └── logs/                           Runtime logs (created automatically)
 ```
 
@@ -70,10 +85,10 @@ C:\AIOHAI\                          (or $SECURE_LLM_HOME)
 `StartupSecurityVerifier` runs before the proxy accepts any connections. It checks for admin/root execution (refused by default), verifies environment variables for suspicious overrides (`OLLAMA_OVERRIDE`, `SKIP_SECURITY`, etc.), and validates that the security components module loaded correctly.
 
 ### Layer 2 — Integrity Monitoring
-`IntegrityVerifier` hashes the proxy source, policy file, and config at startup. A background thread re-checks periodically. If any file is modified at runtime, the proxy enters lockdown mode — all requests return HTTP 503 until restart. When an HSM is connected, the policy file's signature is verified against the hardware key.
+`IntegrityVerifier` hashes the policy file and all framework prompt files at startup. A background thread re-checks every 10 seconds. If any file is modified or deleted at runtime, the proxy enters lockdown mode — all requests return HTTP 503 until restart. When an HSM is connected, the policy file's signature is also verified against the hardware key.
 
 ### Layer 3 — Network Isolation
-`NetworkInterceptor` hooks Python's `socket.socket` at the C level. All outgoing connections are checked against a strict allowlist (default: only `localhost` and `127.0.0.1`). DNS-over-HTTPS servers are explicitly blocked to prevent DNS-based data exfiltration. DNS queries are also checked for tunneling patterns (high entropy, excessive length, deep subdomain nesting).
+`NetworkInterceptor` hooks Python's `socket.socket` at the C level. All outgoing connections are checked against a strict allowlist (default: only `localhost` and `127.0.0.1`). Private IP ranges are blocked, including the 100.64.0.0/10 (Tailscale/CGNAT) range. DNS-over-HTTPS servers are explicitly blocked to prevent DNS-based data exfiltration. DNS queries are also checked for tunneling patterns (high entropy, excessive length, deep subdomain nesting).
 
 ### Layer 4 — Input Sanitization
 `ContentSanitizer` processes every user and LLM message. It strips invisible Unicode characters, normalizes homoglyphs and fullwidth characters, detects prompt injection patterns (role manipulation, fake system tags, jailbreak attempts, anti-transparency instructions), and assigns trust levels to external content.
@@ -88,7 +103,7 @@ C:\AIOHAI\                          (or $SECURE_LLM_HOME)
 `PathValidator` blocks access to credential stores (`.ssh`, `.aws`, browser databases, PEM/key files, environment files, SAM/NTDS, Office persistence directories), resolves symlinks and short filenames to prevent path traversal, and blocks UNC paths, NTFS alternate data streams, and device paths. `CommandValidator` blocks encoded PowerShell, credential theft tools, persistence mechanisms, privilege escalation, obfuscated commands, clipboard access, and UAC bypass patterns. Docker commands are classified into tiers (standard/elevated/critical/blocked).
 
 ### Layer 8 — Approval & Execution
-`ApprovalManager` requires explicit user approval for elevated and critical operations. Approval tokens are timing-safe (HMAC-compared), session-bound, and time-limited (5 min default). `SecureExecutor` runs approved commands in a sanitized subprocess environment (only safe env vars inherited), enforces timeouts, and captures output. Document operations go through `DocumentContentScanner`, `MacroBlocker`, and `MetadataSanitizer`.
+`ApprovalManager` requires explicit user approval for elevated and critical operations. Approval tokens are timing-safe (HMAC-compared), session-bound, and time-limited (5 min default). `SecureExecutor` runs approved commands in a sanitized subprocess environment (only safe env vars inherited), enforces timeouts, and captures output. Document operations go through `DocumentContentScanner`, `MacroBlocker`, and `MetadataSanitizer`. API queries go through `LocalServiceRegistry` validation and `GraphAPIRegistry` scope enforcement.
 
 ### Layer 9 — Hardware Security (Optional)
 
@@ -109,8 +124,15 @@ C:\AIOHAI\                          (or $SECURE_LLM_HOME)
 ### Smart Home (Home Assistant + Frigate)
 `LocalServiceRegistry` maintains an allowlist of local services the LLM can query (Frigate NVR, Home Assistant, the AIOHAI notification bridge). Each service registration verifies the target is actually listening before accepting it. `LocalAPIQueryExecutor` executes queries with PII protection and response size limits. `SmartHomeStackDetector` auto-discovers your Docker-based smart home stack. `SmartHomeConfigAnalyzer` audits docker-compose files for security issues (privileged containers, host networking, missing digest pinning, etc.).
 
+The Home Assistant framework prompt (`policy/ha_framework_v3.md`) teaches the local LLM how to query entities, manage Docker containers, configure Frigate cameras, and set up automations — all through the proxy's security layers.
+
 ### Microsoft Office
 `DocumentContentScanner` scans Office documents (docx, xlsx, pptx and their macro-enabled variants) for PII, credentials, and sensitive content before reads and writes. `MacroBlocker` blocks creation or modification of macro-enabled formats (xlsm, docm, dotm, etc.). `MetadataSanitizer` strips author, revision, and tracking metadata from outgoing documents. `GraphAPIRegistry` provides optional Microsoft Graph API integration with scope enforcement (dangerous scopes like `Mail.Send` are blocked). `DocumentAuditLogger` maintains a separate audit trail for all document operations. `OfficeStackDetector` detects installed Office components.
+
+The Microsoft Office framework prompt (`policy/office_framework_v3.md`) teaches the local LLM how to create, read, and analyze Office documents, handle CSV/TSV files safely, and use Graph API endpoints — all through the proxy's document security pipeline.
+
+### Tailscale (Mesh VPN)
+Tailscale is recognized but not actively managed. The security policy (Section 8.5) blocks `tailscale up/down/set` commands and Tailscale config file access. The network interceptor hard-blocks the entire 100.64.0.0/10 CGNAT range at the socket level, preventing the LLM from reaching any Tailscale-connected device. Read-only commands (`tailscale status`) are allowed. Full Tailscale mesh integration (controlled access to devices on the user's tailnet) is a future enhancement.
 
 ---
 
@@ -128,12 +150,14 @@ All settings live in `config/config.json`. Key sections:
 | `network` | Socket hooks, allowlist, private IP blocking |
 | `dns_security` | Exfiltration detection thresholds |
 | `resource_limits` | File ops, concurrent processes, session duration |
-| `command_execution` | Timeout, executable allowlist, obfuscation detection |
+| `command_execution` | Timeout, obfuscation detection |
 | `path_security` | Allowed drives, UNC/ADS/symlink/short-name handling |
 | `smart_home` | Notification bridge, stack detection, Frigate |
 | `office` | Document dirs, Graph API, macro blocking, audit |
 | `alerting` | Desktop/sound/email/webhook alerts |
 | `logging` | Log directory, chain hashing, retention |
+
+The executable whitelist is defined as a code constant (`WHITELISTED_EXECUTABLES` in `aiohai_proxy.py`) and is not configurable via config.json. This is intentional — it prevents config file tampering from weakening command security.
 
 CLI flags override `config.json`, which overrides built-in defaults.
 
@@ -190,22 +214,37 @@ Type these directly in your chat to interact with the proxy:
 
 | Command | What It Does |
 |---|---|
-| `APPROVE <id>` | Approve a pending action |
-| `DENY <id>` | Deny a pending action |
+| `CONFIRM <id>` | Approve a pending action |
+| `REJECT <id>` | Deny a pending action |
+| `CONFIRM ALL` | Approve all pending actions |
+| `EXPLAIN <id>` | Show details about a pending action |
+| `PENDING` | List all pending actions |
 | `REPORT` | Show full session transparency report |
 | `STATUS` | Show proxy and component health |
+| `HELP` | Show available commands |
+| `STOP` | Emergency stop — reject all pending actions |
 
 ---
 
-## v3.0.1 Changes (Latest)
+## Version History
 
-This release fixes 8 security issues found in post-audit review, 1 bug, and 4 optimizations. Full details in `CHANGELOG_v3.0.1.md`. Highlights:
+### v3.0.2 (Current)
 
-**Security fixes:** FIDO2 metadata injection (H-4), session binding bypass (H-5), framework file injection (M-6), Docker image digest verification (M-7), Ollama circuit breaker (M-8), API query transparency tracking (M-9), Docker tier display in approval cards (L-6), service registration port verification (L-7), HSM reconnection failure alerts (L-8).
+4 fixes from top-to-bottom validation of high concept vs. codebase:
 
-**Bug fix:** `AlertManager._deliver()` was killing its own thread after one alert. All subsequent security alerts would silently vanish.
+**V-1: API_QUERY action routing** — `LocalAPIQueryExecutor` and `GraphAPIRegistry` were fully implemented but never called from the action pipeline. The LLM was instructed to emit `<action type="API_QUERY">` tags, but `_process_response` and `_execute_approved` had no routing for them. Both methods now handle API_QUERY with full pre-approval validation (service registry or Graph API tier check), action card display, and execution routing. This was required for both framework prompts (Home Assistant and Office) to function.
 
-**Optimizations:** Duplicate document scan eliminated, duplicate Docker tier logic consolidated, inline extension sets promoted to module constants, dead code removed. Net: +234 / -88 lines across 2 files.
+**V-2: Framework integrity verification** — `IntegrityVerifier` now hashes all framework prompt files alongside the policy file at startup. If any framework file is modified or deleted at runtime, the proxy enters lockdown. `ALLOWED_FRAMEWORK_NAMES` promoted to a module-level constant shared between `_load_frameworks` and `IntegrityVerifier` for consistent enforcement.
+
+**V-3: Config executable list cleanup** — Removed `powershell.exe` and `pwsh.exe` from config.json (they were removed from the code constant in v3.0.1 security fix F-007/F-008 but left in config, creating a misleading impression). The config list is now documentation-only with a note explaining the code constant is authoritative. Synced to match the actual `WHITELISTED_EXECUTABLES` constant.
+
+**V-4: Optional Office dependencies documented** — Added `python-docx`, `openpyxl`, and `python-pptx` to `requirements.txt` as commented optional dependencies.
+
+Net: +181 lines in proxy, config and requirements updated.
+
+### v3.0.1
+
+8 security fixes (FIDO2 metadata injection, session binding bypass, framework file injection, Docker image digest verification, circuit breaker, API query transparency tracking, Docker tier display, service registration port verification), 1 bug fix (AlertManager thread death), 4 optimizations. Net: +234 / -88 lines.
 
 ---
 
@@ -217,7 +256,12 @@ This release fixes 8 security issues found in post-audit review, 1 bug, and 4 op
 | `psutil` | Recommended | Process/resource monitoring |
 | `pywin32` | Optional (Windows) | DLL integrity, file locking |
 | `fido2` | Optional | FIDO2/WebAuthn hardware approval |
-| `pkcs11` | Optional | Nitrokey HSM integration |
+| `flask` + `flask-cors` | Optional | FIDO2 approval web server |
+| `cryptography` | Optional | TLS certificates, FIDO2 crypto |
+| `PyKCS11` | Optional | Nitrokey HSM integration |
+| `python-docx` | Optional | Word document metadata sanitization |
+| `openpyxl` | Optional | Excel document metadata sanitization |
+| `python-pptx` | Optional | PowerPoint document metadata sanitization |
 
 The proxy is designed to degrade gracefully. If optional dependencies are missing, the corresponding features are disabled with a startup warning. Use `--allow-degraded` to start without `security_components.py` entirely (not recommended for production).
 
@@ -225,7 +269,7 @@ The proxy is designed to degrade gracefully. If optional dependencies are missin
 
 ## Platform Support
 
-Primary target: **Windows 10/11** (the codebase references Windows paths, DLL verification, PowerShell patterns, registry persistence, and Windows-specific credential stores). Linux is partially supported — network interception, content analysis, and Ollama proxying all work, but path patterns and command validation are Windows-centric. The FIDO2 and HSM subsystems are cross-platform.
+Primary target: **Windows 10/11** (the codebase references Windows paths, DLL verification, registry persistence, and Windows-specific credential stores). Linux is partially supported — network interception, content analysis, and Ollama proxying all work, but path patterns and command validation are Windows-centric. The FIDO2 and HSM subsystems are cross-platform.
 
 ---
 

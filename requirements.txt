@@ -18,3 +18,9 @@ cryptography>=42.0.0
 
 # Optional: Windows-specific
 # pywin32>=306  # Uncomment on Windows for full functionality
+
+# Optional: Office document support (metadata sanitization, content scanning)
+# Required only if office.enabled=true in config.json
+# python-docx>=0.8.11  # Word document support
+# openpyxl>=3.1.0      # Excel document support
+# python-pptx>=0.6.21  # PowerPoint document support

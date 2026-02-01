@@ -74,10 +74,9 @@
     },
     "command_execution": {
         "allow_shell": false,
-        "whitelisted_executables": [
+        "_whitelisted_executables_note": "The authoritative executable whitelist is defined in proxy/aiohai_proxy.py (WHITELISTED_EXECUTABLES constant) and is NOT configurable via this file. The list below is for documentation only. Security fixes F-007/F-008 removed powershell.exe, pwsh.exe, and explorer.exe.",
+        "_reference_whitelist": [
             "cmd.exe",
-            "powershell.exe",
-            "pwsh.exe",
             "python.exe",
             "python3.exe",
             "pip.exe",
@@ -86,6 +85,10 @@
             "npm.cmd",
             "notepad.exe",
             "code.cmd",
+            "docker",
+            "docker.exe",
+            "docker-compose",
+            "docker-compose.exe",
             "dir",
             "echo",
             "type",
@@ -101,6 +104,7 @@
             "findstr",
             "sort",
             "more",
+            "tree",
             "ipconfig",
             "ping",
             "netstat",
@@ -110,7 +114,9 @@
             "tasklist",
             "date",
             "time",
-            "ver"
+            "ver",
+            "set",
+            "where"
         ],
         "detect_obfuscation": true,
         "obfuscation_special_char_threshold": 0.15,
