@@ -1,0 +1,205 @@
+{
+  "$schema": "AIOHAI Configuration v3.0",
+  "_comment": "Security-hardened configuration for proxy-based architecture",
+  
+  "general": {
+    "install_path": "C:\\AIOHAI",
+    "log_level": "FULL",
+    "version": "3.0.0"
+  },
+  
+  "ollama": {
+    "host": "127.0.0.1",
+    "port": 11434,
+    "model": "llama3.2",
+    "timeout_seconds": 120
+  },
+  
+  "proxy": {
+    "_comment": "Settings for AIOHAI proxy",
+    "enabled": true,
+    "listen_host": "127.0.0.1",
+    "listen_port": 11435,
+    "inject_system_prompt": true,
+    "scan_for_injection": true,
+    "sanitize_responses": true,
+    "rate_limit_requests": 100,
+    "rate_limit_window_seconds": 60,
+    "max_pending_approvals": 10
+  },
+  
+  "open_webui": {
+    "_comment": "Recommended Open WebUI environment settings",
+    "OLLAMA_BASE_URL": "http://localhost:11435",
+    "ENABLE_SIGNUP": false,
+    "DEFAULT_USER_ROLE": "pending",
+    "WEBUI_SESSION_COOKIE_SAME_SITE": "strict",
+    "ENABLE_FORWARD_USER_INFO_HEADERS": true,
+    "ENABLE_API_KEY_ENDPOINT_RESTRICTIONS": true
+  },
+  
+  "security": {
+    "policy_file": "policy\\aiohai_security_policy_v3.0.md",
+    "policy_hash": "",
+    "enforce_code_security": true,
+    "credential_redaction": true,
+    "sensitivity_detection": true,
+    "transparency_tracking": true,
+    "refuse_admin": true,
+    "allow_degraded_security": false
+  },
+
+  "hsm": {
+    "enabled": true,
+    "required": true,
+    "use_mock": false,
+    "pin": "",
+    "_comment": "Nitrokey HSM 2 via PKCS#11. Set required=false or use --hsm-optional to start without hardware."
+  },
+
+  "fido2": {
+    "enabled": true,
+    "port": 8443,
+    "bind_address": "0.0.0.0",
+    "api_secret_length_bytes": 32,
+    "approval_timeout_seconds": 300,
+    "_comment": "FIDO2/WebAuthn approval server. Binds to 0.0.0.0 intentionally for phone access on LAN."
+  },
+  
+  "integrity": {
+    "check_interval_seconds": 10,
+    "enable_periodic_checks": true,
+    "tamper_evident_logging": true
+  },
+  
+  "resource_limits": {
+    "max_concurrent_processes": 5,
+    "max_file_operations_per_session": 1000,
+    "max_single_file_mb": 1024,
+    "max_total_read_gb": 10,
+    "max_total_write_gb": 5,
+    "command_timeout_seconds": 30,
+    "max_session_duration_hours": 8
+  },
+  
+  "command_execution": {
+    "allow_shell": false,
+    "whitelisted_executables": [
+      "cmd.exe", "powershell.exe", "pwsh.exe",
+      "python.exe", "python3.exe", "pip.exe",
+      "git.exe", "node.exe", "npm.cmd",
+      "notepad.exe", "code.cmd",
+      "dir", "echo", "type", "cd", "cls", "copy", "move", "del",
+      "mkdir", "rmdir", "ren", "find", "findstr", "sort", "more",
+      "ipconfig", "ping", "netstat", "hostname", "whoami", "systeminfo",
+      "tasklist", "date", "time", "ver"
+    ],
+    "detect_obfuscation": true,
+    "obfuscation_special_char_threshold": 0.15,
+    "obfuscation_indicator_threshold": 2
+  },
+  
+  "network": {
+    "enabled": true,
+    "default_stance": "DENY",
+    "install_socket_hooks": true,
+    "allowlist": [
+      "localhost",
+      "127.0.0.1"
+    ],
+    "block_private_ips": true,
+    "block_tailscale_range": true,
+    "require_mesh_approval": true
+  },
+  
+  "dns_security": {
+    "block_exfiltration": true,
+    "max_query_length": 100,
+    "max_subdomain_levels": 10,
+    "max_entropy_threshold": 4.5
+  },
+  
+  "path_security": {
+    "allowed_drives": ["C:", "D:", "E:"],
+    "block_unc_paths": true,
+    "block_device_paths": true,
+    "block_ads": true,
+    "resolve_symlinks": true,
+    "resolve_short_names": true
+  },
+  
+  "injection_defense": {
+    "enabled": true,
+    "detect_invisible_chars": true,
+    "detect_homoglyphs": true,
+    "detect_patterns": true,
+    "frame_external_content": true,
+    "assign_trust_levels": true
+  },
+  
+  "environment": {
+    "sanitize_subprocess_env": true,
+    "safe_env_vars": [
+      "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+      "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+      "PATHEXT", "COMSPEC"
+    ],
+    "blocked_env_patterns": [
+      ".*KEY.*", ".*SECRET.*", ".*PASSWORD.*", ".*TOKEN.*",
+      ".*CREDENTIAL.*", ".*AUTH.*", ".*API.*", ".*PRIVATE.*"
+    ],
+    "suspicious_env_vars": [
+      "OLLAMA_OVERRIDE", "LLM_BYPASS", "DEBUG_MODE",
+      "SKIP_SECURITY", "DISABLE_CHECKS", "SECURITY_DISABLED"
+    ]
+  },
+  
+  "alerting": {
+    "enable_desktop_alerts": true,
+    "enable_sound_alerts": true,
+    "enable_email_alerts": false,
+    "email_config": {
+      "smtp_server": "",
+      "smtp_port": 587,
+      "use_tls": true,
+      "from_address": "",
+      "to_address": ""
+    },
+    "enable_webhook": false,
+    "webhook_url": ""
+  },
+  
+  "logging": {
+    "log_directory": "logs",
+    "files": {
+      "actions": "actions.log",
+      "blocked": "blocked.log",
+      "security": "security_events.log",
+      "network": "network.log",
+      "execution": "execution.log"
+    },
+    "use_chain_hashing": true,
+    "max_log_size_mb": 100,
+    "retention_days": 30
+  },
+  
+  "temp_security": {
+    "secure_temp_dir": "temp",
+    "clear_on_startup": true,
+    "clear_on_shutdown": true,
+    "use_random_filenames": true
+  },
+  
+  "dll_security": {
+    "verify_integrity": true,
+    "set_dll_directory": true,
+    "expected_dlls": {}
+  },
+  
+  "user_rules": {
+    "additional_blocked_paths": [],
+    "additional_elevated_paths": [],
+    "additional_network_allowlist": [],
+    "custom_application_profiles": []
+  }
+}

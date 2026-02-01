@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>SecureLLM Approvals</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-dim: #8b949e;
+            --accent: #58a6ff;
+            --danger: #f85149;
+            --success: #3fb950;
+            --warning: #d29922;
+            --radius: 12px;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .header .status {
+            font-size: 12px;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .header .status::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+        
+        .container { padding: 16px; max-width: 600px; margin: 0 auto; }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-dim);
+        }
+        
+        .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+        .empty-state h2 { font-size: 20px; margin-bottom: 8px; color: var(--text); }
+        .empty-state p { font-size: 14px; line-height: 1.5; }
+        
+        .approval-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+        
+        .approval-card.delete { border-left: 4px solid var(--danger); }
+        .approval-card.sensitive { border-left: 4px solid var(--warning); }
+        .approval-card.bulk { border-left: 4px solid var(--accent); }
+        
+        .approval-card .type-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        
+        .type-badge.delete { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
+        .type-badge.sensitive { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
+        .type-badge.bulk { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+        
+        .approval-card .target {
+            font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+            font-size: 13px;
+            color: var(--text);
+            word-break: break-all;
+            margin-bottom: 8px;
+            padding: 8px;
+            background: var(--bg);
+            border-radius: 6px;
+        }
+        
+        .approval-card .meta {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-bottom: 12px;
+        }
+        
+        .approval-card .details {
+            font-size: 13px;
+            color: var(--text-dim);
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+        
+        .approval-card .timer {
+            font-size: 12px;
+            color: var(--warning);
+            margin-bottom: 12px;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: transform 0.1s, opacity 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .btn-approve {
+            background: var(--success);
+            color: #000;
+        }
+        
+        .btn-reject {
+            background: var(--surface);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+        
+        .btn-biometric {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+        
+        .feedback {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .feedback.success {
+            display: block;
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        
+        .feedback.error {
+            display: block;
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        
+        .nav-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            display: flex;
+            padding: 8px 0;
+            padding-bottom: max(8px, env(safe-area-inset-bottom));
+        }
+        
+        .nav-bar a {
+            flex: 1;
+            text-align: center;
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 11px;
+            padding: 4px;
+        }
+        
+        .nav-bar a.active { color: var(--accent); }
+        .nav-bar a .icon { font-size: 22px; display: block; margin-bottom: 2px; }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top: 2px solid currentColor;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Pull to refresh indicator */
+        .pull-indicator {
+            text-align: center;
+            padding: 8px;
+            color: var(--text-dim);
+            font-size: 12px;
+        }
+        
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #ffffff;
+                --surface: #f6f8fa;
+                --border: #d0d7de;
+                --text: #1f2328;
+                --text-dim: #656d76;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔐 SecureLLM</h1>
+        <div class="status">Connected</div>
+    </div>
+    
+    <div class="container" id="content">
+        <div id="feedback" class="feedback"></div>
+        <div id="approvals-list"></div>
+    </div>
+    
+    <nav class="nav-bar">
+        <a href="/" class="active">
+            <span class="icon">🔔</span>
+            Approvals
+        </a>
+        <a href="/register">
+            <span class="icon">📱</span>
+            Devices
+        </a>
+        <a href="/admin">
+            <span class="icon">⚙️</span>
+            Admin
+        </a>
+    </nav>
+
+    <script>
+    // =========================================================================
+    // WebAuthn Helpers
+    // =========================================================================
+    
+    function base64ToBuffer(base64) {
+        // Handle URL-safe base64
+        const padded = base64.replace(/-/g, '+').replace(/_/g, '/');
+        const binary = atob(padded);
+        const buffer = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            buffer[i] = binary.charCodeAt(i);
+        }
+        return buffer.buffer;
+    }
+    
+    function bufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+    
+    // =========================================================================
+    // Approval Management
+    // =========================================================================
+    
+    let pollInterval = null;
+    
+    async function loadPendingApprovals() {
+        try {
+            const resp = await fetch('/api/approvals/pending');
+            const data = await resp.json();
+            renderApprovals(data.pending || []);
+        } catch (err) {
+            console.error('Failed to load approvals:', err);
+        }
+    }
+    
+    function renderApprovals(approvals) {
+        const container = document.getElementById('approvals-list');
+        
+        if (approvals.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">✅</div>
+                    <h2>No Pending Approvals</h2>
+                    <p>When the AI needs to perform a sensitive operation,<br>
+                    it will appear here for your approval.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = approvals.map(req => {
+            const typeClass = req.operation_type === 'DELETE' ? 'delete' : 
+                              req.operation_type.includes('SENSITIVE') ? 'sensitive' : 'bulk';
+            
+            const expiresIn = Math.max(0, Math.round(
+                (new Date(req.expires_at) - new Date()) / 1000
+            ));
+            const minutes = Math.floor(expiresIn / 60);
+            const seconds = expiresIn % 60;
+            
+            const detailsHtml = req.details && Object.keys(req.details).length > 0 
+                ? `<div class="details">${Object.entries(req.details)
+                    .map(([k,v]) => `${k}: ${v}`).join('<br>')}</div>` 
+                : '';
+            
+            return `
+                <div class="approval-card ${typeClass}" id="card-${req.request_id}">
+                    <span class="type-badge ${typeClass}">${req.operation_type}</span>
+                    <div class="target">${escapeHtml(req.target)}</div>
+                    ${detailsHtml}
+                    <div class="timer">⏱ Expires in ${minutes}:${seconds.toString().padStart(2,'0')}</div>
+                    <div class="actions">
+                        <button class="btn btn-biometric" onclick="approveWithWebAuthn('${req.request_id}')">
+                            👤 Approve
+                        </button>
+                        <button class="btn btn-reject" onclick="rejectApproval('${req.request_id}')">
+                            ✗ Reject
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // =========================================================================
+    // WebAuthn Authentication
+    // =========================================================================
+    
+    async function approveWithWebAuthn(requestId) {
+        const card = document.getElementById(`card-${requestId}`);
+        const btn = card.querySelector('.btn-biometric');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span> Verifying...';
+        btn.disabled = true;
+        
+        try {
+            // 1. Get WebAuthn options from server
+            const optResp = await fetch(`/api/approvals/${requestId}/options`);
+            if (!optResp.ok) {
+                throw new Error((await optResp.json()).error || 'Failed to get options');
+            }
+            const options = await optResp.json();
+            
+            // 2. Build WebAuthn credential request
+            const publicKeyOptions = {
+                challenge: base64ToBuffer(options.challenge),
+                timeout: options.timeout,
+                rpId: options.rpId,
+                userVerification: options.userVerification || 'required',
+            };
+            
+            // Add allowed credentials if specified
+            if (options.allowCredentials && options.allowCredentials.length > 0) {
+                publicKeyOptions.allowCredentials = options.allowCredentials.map(cred => ({
+                    type: cred.type,
+                    id: base64ToBuffer(cred.id),
+                    transports: cred.transports,
+                }));
+            }
+            
+            // 3. Prompt user for WebAuthn (Face ID / Touch ID / Nitrokey tap)
+            const assertion = await navigator.credentials.get({
+                publicKey: publicKeyOptions,
+            });
+            
+            // 4. Send assertion to server for verification
+            const verifyResp = await fetch(`/api/approvals/${requestId}/verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    credential_id: bufferToBase64(assertion.rawId),
+                    client_data: bufferToBase64(assertion.response.clientDataJSON),
+                    authenticator_data: bufferToBase64(assertion.response.authenticatorData),
+                    signature: bufferToBase64(assertion.response.signature),
+                    sign_count: assertion.response.authenticatorData 
+                        ? new DataView(assertion.response.authenticatorData.slice(33, 37)).getUint32(0) 
+                        : 0,
+                }),
+            });
+            
+            const result = await verifyResp.json();
+            
+            if (result.approved) {
+                showFeedback('success', `✅ ${result.message}`);
+                card.style.opacity = '0.5';
+                setTimeout(() => loadPendingApprovals(), 1500);
+            } else {
+                showFeedback('error', `❌ ${result.message}`);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+            
+        } catch (err) {
+            // Handle user cancellation
+            if (err.name === 'NotAllowedError') {
+                showFeedback('error', 'Authentication cancelled or timed out');
+            } else if (err.name === 'SecurityError') {
+                showFeedback('error', 'WebAuthn not available (HTTPS required)');
+            } else {
+                showFeedback('error', `Error: ${err.message}`);
+            }
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+    
+    async function rejectApproval(requestId) {
+        try {
+            const resp = await fetch(`/api/approvals/${requestId}/reject`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'User rejected from web interface' }),
+            });
+            
+            if (resp.ok) {
+                showFeedback('success', 'Request rejected');
+                setTimeout(() => loadPendingApprovals(), 500);
+            }
+        } catch (err) {
+            showFeedback('error', `Error: ${err.message}`);
+        }
+    }
+    
+    function showFeedback(type, message) {
+        const el = document.getElementById('feedback');
+        el.className = `feedback ${type}`;
+        el.textContent = message;
+        setTimeout(() => { el.className = 'feedback'; }, 5000);
+    }
+    
+    // =========================================================================
+    // Polling & Init
+    // =========================================================================
+    
+    function startPolling() {
+        loadPendingApprovals();
+        pollInterval = setInterval(loadPendingApprovals, 3000);
+    }
+    
+    // Check WebAuthn availability
+    if (window.PublicKeyCredential) {
+        PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+            .then(available => {
+                if (available) {
+                    console.log('Platform authenticator available (Face ID / Touch ID)');
+                }
+            });
+    }
+    
+    // Start
+    document.addEventListener('DOMContentLoaded', startPolling);
+    
+    // Handle visibility changes (resume polling when app comes back)
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            clearInterval(pollInterval);
+        } else {
+            startPolling();
+        }
+    });
+    </script>
+</body>
+</html>

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>SecureLLM - Register Device</title>
+    <style>
+        :root {
+            --bg: #0d1117; --surface: #161b22; --border: #30363d;
+            --text: #e6edf3; --text-dim: #8b949e; --accent: #58a6ff;
+            --danger: #f85149; --success: #3fb950; --warning: #d29922;
+            --radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100vh;
+        }
+        .header {
+            background: var(--surface); border-bottom: 1px solid var(--border);
+            padding: 16px 20px; position: sticky; top: 0; z-index: 100;
+        }
+        .header h1 { font-size: 18px; }
+        .container { padding: 16px; max-width: 600px; margin: 0 auto; padding-bottom: 100px; }
+        
+        .section { margin-bottom: 24px; }
+        .section h2 { font-size: 16px; color: var(--text-dim); margin-bottom: 12px; }
+        
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+        }
+        
+        .device-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 12px 0; border-bottom: 1px solid var(--border);
+        }
+        .device-item:last-child { border-bottom: none; }
+        .device-icon { font-size: 28px; }
+        .device-info { flex: 1; }
+        .device-info .name { font-weight: 600; font-size: 15px; }
+        .device-info .meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+        .device-badge {
+            font-size: 10px; padding: 2px 6px; border-radius: 4px;
+            background: rgba(88, 166, 255, 0.15); color: var(--accent);
+        }
+        
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-size: 14px; color: var(--text-dim); margin-bottom: 6px; }
+        .form-group select, .form-group input {
+            width: 100%; padding: 12px; background: var(--bg); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text); font-size: 15px;
+            -webkit-appearance: none;
+        }
+        .form-group select:focus, .form-group input:focus {
+            outline: none; border-color: var(--accent);
+        }
+        
+        .btn {
+            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.5; }
+        .btn-primary { background: var(--accent); color: #000; }
+        .btn-biometric { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+        .btn-key { background: linear-gradient(135deg, #f97316, #ea580c); color: white; }
+        
+        .feedback {
+            padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; display: none;
+        }
+        .feedback.success { display: block; background: rgba(63,185,80,0.15); color: var(--success); }
+        .feedback.error { display: block; background: rgba(248,81,73,0.15); color: var(--danger); }
+        
+        .or-divider {
+            text-align: center; color: var(--text-dim); margin: 16px 0;
+            font-size: 13px; position: relative;
+        }
+        .or-divider::before, .or-divider::after {
+            content: ''; position: absolute; top: 50%; width: 40%; height: 1px;
+            background: var(--border);
+        }
+        .or-divider::before { left: 0; }
+        .or-divider::after { right: 0; }
+        
+        .spinner {
+            display: inline-block; width: 20px; height: 20px;
+            border: 2px solid transparent; border-top: 2px solid currentColor;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .nav-bar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: var(--surface); border-top: 1px solid var(--border);
+            display: flex; padding: 8px 0;
+            padding-bottom: max(8px, env(safe-area-inset-bottom));
+        }
+        .nav-bar a {
+            flex: 1; text-align: center; color: var(--text-dim);
+            text-decoration: none; font-size: 11px; padding: 4px;
+        }
+        .nav-bar a.active { color: var(--accent); }
+        .nav-bar a .icon { font-size: 22px; display: block; margin-bottom: 2px; }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #fff; --surface: #f6f8fa; --border: #d0d7de;
+                --text: #1f2328; --text-dim: #656d76;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📱 Device Registration</h1>
+    </div>
+    
+    <div class="container">
+        <div id="feedback" class="feedback"></div>
+        
+        <!-- Registered Devices -->
+        <div class="section">
+            <h2>Registered Devices</h2>
+            <div class="card" id="devices-list">
+                <p style="color: var(--text-dim); font-size: 14px;">Loading...</p>
+            </div>
+        </div>
+        
+        <!-- Register New Device -->
+        <div class="section">
+            <h2>Register New Device</h2>
+            <div class="card">
+                <div class="form-group">
+                    <label>User Account</label>
+                    <select id="user-select">
+                        <option value="">Select user...</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Device Name</label>
+                    <input type="text" id="device-name" placeholder="e.g., Dad's iPhone" />
+                </div>
+                
+                <button class="btn btn-biometric" onclick="registerPlatform()" id="btn-platform">
+                    👤 Register with Face ID / Fingerprint
+                </button>
+                
+                <div class="or-divider">or</div>
+                
+                <button class="btn btn-key" onclick="registerRoaming()" id="btn-roaming">
+                    🔑 Register Nitrokey 3A NFC
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <nav class="nav-bar">
+        <a href="/"><span class="icon">🔔</span>Approvals</a>
+        <a href="/register" class="active"><span class="icon">📱</span>Devices</a>
+        <a href="/admin"><span class="icon">⚙️</span>Admin</a>
+    </nav>
+
+    <script>
+    // =========================================================================
+    // WebAuthn Helpers
+    // =========================================================================
+    
+    function base64ToBuffer(b64) {
+        const padded = b64.replace(/-/g, '+').replace(/_/g, '/');
+        const bin = atob(padded);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        return buf.buffer;
+    }
+    
+    function bufferToBase64(buf) {
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+    
+    // =========================================================================
+    // Load Data
+    // =========================================================================
+    
+    async function loadDevices() {
+        try {
+            const resp = await fetch('/api/status');
+            const data = await resp.json();
+            
+            const container = document.getElementById('devices-list');
+            const select = document.getElementById('user-select');
+            
+            // Populate user dropdown
+            select.innerHTML = '<option value="">Select user...</option>';
+            (data.users || []).forEach(u => {
+                select.innerHTML += `<option value="${u.id}">${u.name} (${u.permission})</option>`;
+            });
+            
+            // Display devices
+            const auths = data.authenticators || [];
+            if (auths.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-dim); font-size: 14px; text-align: center; padding: 20px;">No devices registered yet</p>';
+                return;
+            }
+            
+            container.innerHTML = auths.map(a => {
+                const icon = a.type === 'fido2_platform' ? '📱' : '🔑';
+                const typeName = a.type === 'fido2_platform' ? 'Biometric' : 'Security Key';
+                return `
+                    <div class="device-item">
+                        <div class="device-icon">${icon}</div>
+                        <div class="device-info">
+                            <div class="name">${escapeHtml(a.name)}</div>
+                            <div class="meta">${a.user} • Last used: ${a.last_used}</div>
+                        </div>
+                        <span class="device-badge">${typeName}</span>
+                    </div>
+                `;
+            }).join('');
+            
+        } catch (err) {
+            console.error('Failed to load devices:', err);
+        }
+    }
+    
+    function escapeHtml(t) {
+        const d = document.createElement('div');
+        d.textContent = t;
+        return d.innerHTML;
+    }
+    
+    // =========================================================================
+    // Registration
+    // =========================================================================
+    
+    async function registerPlatform() {
+        await registerDevice('fido2_platform', 'btn-platform');
+    }
+    
+    async function registerRoaming() {
+        await registerDevice('fido2_roaming', 'btn-roaming');
+    }
+    
+    async function registerDevice(authType, btnId) {
+        const userId = document.getElementById('user-select').value;
+        const deviceName = document.getElementById('device-name').value;
+        
+        if (!userId) {
+            showFeedback('error', 'Please select a user');
+            return;
+        }
+        if (!deviceName) {
+            showFeedback('error', 'Please enter a device name');
+            return;
+        }
+        
+        const btn = document.getElementById(btnId);
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span> Registering...';
+        btn.disabled = true;
+        
+        try {
+            // 1. Begin registration
+            const beginResp = await fetch('/api/register/begin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: userId,
+                    device_name: deviceName,
+                    authenticator_type: authType,
+                }),
+            });
+            
+            if (!beginResp.ok) {
+                throw new Error((await beginResp.json()).error || 'Registration failed');
+            }
+            
+            const options = await beginResp.json();
+            
+            // 2. Build WebAuthn credential creation options
+            const createOptions = {
+                publicKey: {
+                    challenge: base64ToBuffer(options.challenge),
+                    rp: options.rp || { id: '{{ rp_id }}', name: 'SecureLLM' },
+                    user: {
+                        id: base64ToBuffer(options.user?.id || btoa(userId)),
+                        name: options.user?.name || userId,
+                        displayName: options.user?.displayName || userId,
+                    },
+                    pubKeyCredParams: [
+                        { alg: -7, type: 'public-key' },   // ES256
+                        { alg: -257, type: 'public-key' },  // RS256
+                    ],
+                    timeout: options.timeout || 120000,
+                    authenticatorSelection: {
+                        authenticatorAttachment: authType === 'fido2_platform' ? 'platform' : 'cross-platform',
+                        userVerification: 'required',
+                        residentKey: 'preferred',
+                    },
+                    attestation: 'none',
+                },
+            };
+            
+            // 3. Create credential (Face ID / Nitrokey prompt)
+            const credential = await navigator.credentials.create(createOptions);
+            
+            // 4. Complete registration
+            const completeResp = await fetch('/api/register/complete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    registration_id: options.registration_id,
+                    credential_id: bufferToBase64(credential.rawId),
+                    public_key: bufferToBase64(credential.response.getPublicKey?.() || new ArrayBuffer(0)),
+                    client_data: bufferToBase64(credential.response.clientDataJSON),
+                    attestation_object: bufferToBase64(credential.response.attestationObject),
+                }),
+            });
+            
+            const result = await completeResp.json();
+            
+            if (result.registered) {
+                showFeedback('success', `✅ ${result.message}`);
+                document.getElementById('device-name').value = '';
+                loadDevices();
+            } else {
+                showFeedback('error', `❌ ${result.error || 'Registration failed'}`);
+            }
+            
+        } catch (err) {
+            if (err.name === 'NotAllowedError') {
+                showFeedback('error', 'Registration cancelled or timed out');
+            } else if (err.name === 'SecurityError') {
+                showFeedback('error', 'WebAuthn requires HTTPS');
+            } else {
+                showFeedback('error', `Error: ${err.message}`);
+            }
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+    
+    function showFeedback(type, msg) {
+        const el = document.getElementById('feedback');
+        el.className = `feedback ${type}`;
+        el.textContent = msg;
+        setTimeout(() => { el.className = 'feedback'; }, 5000);
+    }
+    
+    document.addEventListener('DOMContentLoaded', loadDevices);
+    </script>
+</body>
+</html>
