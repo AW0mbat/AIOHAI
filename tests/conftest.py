@@ -116,12 +116,12 @@ def silent_alerts():
 
 @pytest.fixture
 def path_validator(config, mock_logger, mock_alerts):
-    return PathValidator(config, mock_logger, mock_alerts)
+    return PathValidator(config, mock_logger)
 
 
 @pytest.fixture
 def command_validator(config, mock_logger, mock_alerts):
-    return CommandValidator(config, mock_logger, mock_alerts)
+    return CommandValidator(config, mock_logger)
 
 
 @pytest.fixture
@@ -136,4 +136,4 @@ def integrity(config, mock_logger, mock_alerts):
 
 @pytest.fixture
 def approval_mgr(config, mock_logger, mock_alerts):
-    return ApprovalManager(config, mock_logger, mock_alerts)
+    return ApprovalManager(config, mock_logger)
