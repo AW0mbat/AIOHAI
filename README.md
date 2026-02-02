@@ -43,7 +43,7 @@ The proxy was designed for a specific threat model: you're running a capable loc
 ## File Layout
 
 ```
-C:\AIOHAI\                          (or $SECURE_LLM_HOME)
+C:\AIOHAI\                          (or $AIOHAI_HOME)
 ├── proxy/
 │   └── aiohai_proxy.py             Main proxy (~4,760 lines)
 ├── security/
@@ -193,7 +193,7 @@ python proxy/aiohai_proxy.py [OPTIONS]
 
 1. Install Ollama and pull a model: `ollama pull llama3.2`
 2. Install Open WebUI (or any compatible frontend)
-3. Clone this repo into `C:\AIOHAI` (or set `$SECURE_LLM_HOME`)
+3. Clone this repo into `C:\AIOHAI` (or set `$AIOHAI_HOME`)
 4. Install Python dependencies: `pip install psutil` (optional, enables resource monitoring)
 5. Start the proxy:
    ```bash

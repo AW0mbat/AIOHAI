@@ -460,7 +460,7 @@ class UnifiedConfig:
     ollama_host: str = "127.0.0.1"
     ollama_port: int = 11434
     
-    base_dir: Path = field(default_factory=lambda: Path(os.environ.get('SECURE_LLM_HOME', r'C:\AIOHAI')))
+    base_dir: Path = field(default_factory=lambda: Path(os.environ.get('AIOHAI_HOME', r'C:\AIOHAI')))
     policy_file: Path = None
     policy_signature_file: Path = None  # NEW: HSM signature
     log_dir: Path = None
