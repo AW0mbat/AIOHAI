@@ -74,6 +74,13 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 │   └── templates/                  FIDO2 approval UI
 ├── setup/
 │   └── Setup.ps1                   Windows installer
+├── desktop/                        Desktop companion app (Electron)
+│   ├── package.json                Node.js dependencies and scripts
+│   ├── src/main/                   Electron main process (TypeScript)
+│   ├── src/renderer/               React UI (TypeScript + CSS)
+│   ├── start-aiohai.bat            One-click startup (Windows)
+│   ├── stop-aiohai.bat             One-click shutdown (Windows)
+│   └── FIRST_RUN_GUIDE.md          Setup walkthrough
 └── logs/                           Runtime logs (created automatically)
 ```
 
@@ -223,6 +230,60 @@ Type these directly in your chat to interact with the proxy:
 | `STATUS` | Show proxy and component health |
 | `HELP` | Show available commands |
 | `STOP` | Emergency stop — reject all pending actions |
+
+---
+
+## Desktop Companion App
+
+The `desktop/` directory contains an Electron app that serves as a single pane of glass for AIOHAI — chat, approvals, health monitoring, log viewing, and configuration in one window, replacing the multi-tab browser workflow.
+
+**Status:** Phase 1 in progress. Scaffold validated on Windows. Connection to Open WebUI tested and working.
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org) LTS (v20+)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (for Open WebUI)
+
+### First-Time Setup
+
+```bash
+cd desktop
+npm install
+```
+
+This only needs to run once per machine. See `desktop/FIRST_RUN_GUIDE.md` for a detailed walkthrough including Node.js installation.
+
+### Running the App
+
+**Option 1 — One-click:** Double-click `desktop/start-aiohai.bat`. Starts Docker, builds, and launches the app.
+
+**Option 2 — Manual:**
+```bash
+# Terminal 1: Start the dev server
+cd desktop
+npm run dev:renderer
+
+# Terminal 2: Build and launch
+cd desktop
+npm run build:main
+npm run start
+```
+
+### Open WebUI Docker Setup
+
+The app connects to an Open WebUI instance. If you don't have one running:
+
+```bash
+docker run -d -p 3000:8080 --name open-webui-dev -e WEBUI_AUTH=True -e ENABLE_API_KEYS=True -e ENABLE_PERSISTENT_CONFIG=False ghcr.io/open-webui/open-webui:main
+```
+
+Create an admin account at `http://localhost:3000`, then generate an API key at **Settings → Account → API Keys**. The app will ask for this key on first launch.
+
+> **Note:** API key creation requires `ENABLE_API_KEYS=True` (plural, changed in Open WebUI v0.6.37+) and per-user permission enabled in **Admin Settings**.
+
+### What It Does Not Do
+
+The desktop app is a client — it cannot bypass any security layer. It consumes existing APIs (Open WebUI REST, FIDO2 REST) and reads local files (logs, config). The proxy still enforces all rules in code. The policy still guides the LLM. The framework prompts still provide domain knowledge.
 
 ---
 

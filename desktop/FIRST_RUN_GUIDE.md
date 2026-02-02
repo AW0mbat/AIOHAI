@@ -52,7 +52,7 @@ It doesn't need to be in `C:\AIOHAI` on your dev machine — it can be anywhere.
 
 ---
 
-## Step 2 — Install Dependencies
+## Step 2 — Install Dependencies (One-Time Only)
 
 Open a terminal and navigate to the desktop folder:
 
@@ -66,6 +66,8 @@ Then install all dependencies:
 npm install
 ```
 
+**This only needs to run once per machine.** After the initial install, you can use `start-aiohai.bat` for all future launches.
+
 **What to expect:**
 - Takes 1–3 minutes (downloads Electron + React + Vite + TypeScript)
 - You'll see a progress bar and some output
@@ -74,8 +76,14 @@ npm install
 
 When it finishes, you should see something like:
 ```
-added 347 packages in 45s
+added 476 packages in 19s
 ```
+
+**If you get a "running scripts is disabled" error in PowerShell:**
+```
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+Type `Y` to confirm, then retry `npm install`.
 
 ---
 
@@ -209,19 +217,53 @@ This is fine — it means the health check is timing out rather than getting a c
 
 ## Stopping Everything
 
+**If you used `start-aiohai.bat`:** Just close the Electron window. The script cleans up Node processes automatically. Docker container stays running for faster next startup.
+
+**If you started manually:**
 1. Close the Electron window (or Ctrl+C in the second terminal)
 2. Ctrl+C in the first terminal (stops the Vite dev server)
 
-That's it. Nothing is running in the background.
+**To stop everything including Docker:** Double-click `stop-aiohai.bat`, or run `docker stop open-webui-dev` in PowerShell.
+
+---
+
+## Open WebUI Docker Setup
+
+The desktop app needs an Open WebUI instance to connect to. If you don't have one:
+
+```
+docker run -d -p 3000:8080 --name open-webui-dev -e WEBUI_AUTH=True -e ENABLE_API_KEYS=True -e ENABLE_PERSISTENT_CONFIG=False ghcr.io/open-webui/open-webui:main
+```
+
+Then:
+1. Go to `http://localhost:3000` and create an admin account
+2. Go to **Admin Settings** and enable **API Keys** if not already on
+3. Go to **Settings → Account → API Keys** and create a key
+4. Use this key in the desktop app's connection setup
+
+**Important:** The environment variable is `ENABLE_API_KEYS` (plural). This changed in Open WebUI v0.6.37. The singular `ENABLE_API_KEY` will not work.
+
+---
+
+## Daily Workflow
+
+After the one-time setup is complete, your daily workflow is:
+
+1. Make sure Docker Desktop is running
+2. Double-click `start-aiohai.bat`
+3. Use the app
+4. Close the Electron window when done
 
 ---
 
 ## What Comes Next
 
-Once the scaffold runs successfully, the next build steps are:
+The desktop app is being built in phases. Current status:
 
-1. **OpenWebUIClient service** — connects to your Open WebUI API with the Bearer token
-2. **ChatPanel** — replace the placeholder with real SSE streaming chat
-3. **FIDO2Client + ApprovalModal** — the approval flow with Windows Hello
-4. **LogViewer** — wire up the LogWatcher IPC to a real UI panel
-5. **ConnectionSetup** — first-run wizard for URLs and API key
+- [x] **Electron scaffold** — app opens, sidebar navigation, dark theme
+- [x] **OpenWebUIClient** — API connection with Bearer token auth
+- [x] **ConnectionSetup** — first-run wizard for URL and API key
+- [ ] **ChatPanel** — SSE streaming chat with model selection
+- [ ] **FIDO2 ApprovalModal** — Windows Hello / hardware key approval flow
+- [ ] **LogViewer** — live proxy log stream with filtering
+- [ ] **Dashboard enhancements** — proxy status, transparency reports
