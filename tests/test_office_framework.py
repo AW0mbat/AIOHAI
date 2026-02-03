@@ -764,7 +764,7 @@ class TestOfficeFrameworkFile(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.fw_path = PROJECT_ROOT / 'policy' / 'microsoft_office_framework_v1.md'
+        cls.fw_path = PROJECT_ROOT / 'policy' / 'office_framework_v3.md'
         if cls.fw_path.exists():
             cls.content = cls.fw_path.read_text(encoding='utf-8')
         else:
@@ -846,8 +846,8 @@ class TestBothFrameworksLoad(unittest.TestCase):
         policy_dir = PROJECT_ROOT / 'policy'
         found = sorted(policy_dir.glob('*_framework_*.md'))
         names = [f.name for f in found]
-        self.assertIn('home_assistant_framework_v1.md', names)
-        self.assertIn('microsoft_office_framework_v1.md', names)
+        self.assertIn('ha_framework_v3.md', names)
+        self.assertIn('office_framework_v3.md', names)
         self.assertEqual(len(found), 2)
 
 
@@ -858,7 +858,7 @@ class TestBothFrameworksLoad(unittest.TestCase):
 class TestNoOldNamingOffice(unittest.TestCase):
 
     def test_no_securellm_in_office_framework(self):
-        fw = PROJECT_ROOT / 'policy' / 'microsoft_office_framework_v1.md'
+        fw = PROJECT_ROOT / 'policy' / 'office_framework_v3.md'
         content = fw.read_text(encoding='utf-8')
         for old in ('SecureLLM', 'securellm', 'secure_llm'):
             self.assertNotIn(old, content)

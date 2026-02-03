@@ -640,13 +640,13 @@ class TestFrameworkLoading(unittest.TestCase):
     def test_framework_glob_pattern(self):
         """Files matching *_framework_*.md should be discovered by glob."""
         policy_dir = self.tmp / "policy"
-        (policy_dir / "home_assistant_framework_v1.md").write_text("# HA Framework")
+        (policy_dir / "ha_framework_v3.md").write_text("# HA Framework")
         (policy_dir / "zigbee_framework_v1.md").write_text("# Zigbee Framework")
         (policy_dir / "not_a_framework.md").write_text("# Not a framework")
 
         found = sorted(policy_dir.glob("*_framework_*.md"))
         names = [f.name for f in found]
-        self.assertIn("home_assistant_framework_v1.md", names)
+        self.assertIn("ha_framework_v3.md", names)
         self.assertIn("zigbee_framework_v1.md", names)
         self.assertNotIn("not_a_framework.md", names)
 
@@ -776,7 +776,7 @@ class TestFrameworkFile(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.fw_path = PROJECT_ROOT / "policy" / "home_assistant_framework_v1.md"
+        cls.fw_path = PROJECT_ROOT / "policy" / "ha_framework_v3.md"
         if cls.fw_path.exists():
             cls.content = cls.fw_path.read_text(encoding="utf-8")
         else:
