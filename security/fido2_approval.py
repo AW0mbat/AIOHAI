@@ -78,135 +78,150 @@ except ImportError:
 
 logger = logging.getLogger("aiohai.fido2")
 
+# Import shared types from aiohai.core.types
+# These were previously defined inline in this file
+try:
+    from aiohai.core.types import (
+        ApprovalTier, ApprovalStatus, UserRole,
+        RegisteredCredential, RegisteredUser, HardwareApprovalRequest
+    )
+    _TYPES_FROM_CORE = True
+except ImportError:
+    # Fallback: types defined inline below (for backward compat during transition)
+    _TYPES_FROM_CORE = False
+
 
 # =============================================================================
 # DATA MODELS
 # =============================================================================
+# Note: These are now primarily defined in aiohai.core.types
+# The definitions below are fallbacks for backward compatibility during transition
 
-class ApprovalTier(Enum):
-    TIER_1 = 1  # No approval (list, read metadata)
-    TIER_2 = 2  # Software approval (read/write non-sensitive)
-    TIER_3 = 3  # Hardware approval (DELETE, sensitive, bulk)
-    TIER_4 = 4  # Physical server presence (policy, HSM, users)
-
-
-class ApprovalStatus(Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
-    CANCELLED = "cancelled"
+if not _TYPES_FROM_CORE:
+    class ApprovalTier(Enum):
+        TIER_1 = 1  # No approval (list, read metadata)
+        TIER_2 = 2  # Software approval (read/write non-sensitive)
+        TIER_3 = 3  # Hardware approval (DELETE, sensitive, bulk)
+        TIER_4 = 4  # Physical server presence (policy, HSM, users)
 
 
-class UserRole(Enum):
-    ADMIN = "admin"
-    TRUSTED_ADULT = "trusted"
-    RESTRICTED = "restricted"
-    GUEST = "guest"
+    class ApprovalStatus(Enum):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
+        EXPIRED = "expired"
+        CANCELLED = "cancelled"
 
 
-@dataclass
-class RegisteredCredential:
-    credential_id: bytes
-    public_key: bytes
-    sign_count: int
-    authenticator_type: str  # 'security_key' or 'platform'
-    device_name: str
-    registered_at: str
-    last_used: str = ""
-
-    def to_dict(self) -> dict:
-        return {
-            'credential_id': base64.urlsafe_b64encode(self.credential_id).decode(),
-            'public_key': base64.urlsafe_b64encode(self.public_key).decode(),
-            'sign_count': self.sign_count,
-            'authenticator_type': self.authenticator_type,
-            'device_name': self.device_name,
-            'registered_at': self.registered_at,
-            'last_used': self.last_used,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> 'RegisteredCredential':
-        return cls(
-            credential_id=base64.urlsafe_b64decode(d['credential_id']),
-            public_key=base64.urlsafe_b64decode(d['public_key']),
-            sign_count=d['sign_count'],
-            authenticator_type=d['authenticator_type'],
-            device_name=d['device_name'],
-            registered_at=d['registered_at'],
-            last_used=d.get('last_used', ''),
-        )
+    class UserRole(Enum):
+        ADMIN = "admin"
+        TRUSTED_ADULT = "trusted"
+        RESTRICTED = "restricted"
+        GUEST = "guest"
 
 
-@dataclass
-class RegisteredUser:
-    user_id: bytes
-    username: str
-    role: UserRole
-    credentials: List[RegisteredCredential] = field(default_factory=list)
-    created_at: str = ""
-    allowed_paths: List[str] = field(default_factory=list)
+    @dataclass
+    class RegisteredCredential:
+        credential_id: bytes
+        public_key: bytes
+        sign_count: int
+        authenticator_type: str  # 'security_key' or 'platform'
+        device_name: str
+        registered_at: str
+        last_used: str = ""
 
-    def to_dict(self) -> dict:
-        return {
-            'user_id': base64.urlsafe_b64encode(self.user_id).decode(),
-            'username': self.username,
-            'role': self.role.value,
-            'credentials': [c.to_dict() for c in self.credentials],
-            'created_at': self.created_at,
-            'allowed_paths': self.allowed_paths,
-        }
+        def to_dict(self) -> dict:
+            return {
+                'credential_id': base64.urlsafe_b64encode(self.credential_id).decode(),
+                'public_key': base64.urlsafe_b64encode(self.public_key).decode(),
+                'sign_count': self.sign_count,
+                'authenticator_type': self.authenticator_type,
+                'device_name': self.device_name,
+                'registered_at': self.registered_at,
+                'last_used': self.last_used,
+            }
 
-    @classmethod
-    def from_dict(cls, d: dict) -> 'RegisteredUser':
-        return cls(
-            user_id=base64.urlsafe_b64decode(d['user_id']),
-            username=d['username'],
-            role=UserRole(d['role']),
-            credentials=[RegisteredCredential.from_dict(c) for c in d.get('credentials', [])],
-            created_at=d.get('created_at', ''),
-            allowed_paths=d.get('allowed_paths', []),
-        )
+        @classmethod
+        def from_dict(cls, d: dict) -> 'RegisteredCredential':
+            return cls(
+                credential_id=base64.urlsafe_b64decode(d['credential_id']),
+                public_key=base64.urlsafe_b64decode(d['public_key']),
+                sign_count=d['sign_count'],
+                authenticator_type=d['authenticator_type'],
+                device_name=d['device_name'],
+                registered_at=d['registered_at'],
+                last_used=d.get('last_used', ''),
+            )
 
 
-@dataclass
-class HardwareApprovalRequest:
-    request_id: str
-    operation_type: str
-    target: str
-    description: str
-    tier: ApprovalTier
-    status: ApprovalStatus = ApprovalStatus.PENDING
-    required_role: UserRole = UserRole.ADMIN
-    approved_by: str = ""
-    authenticator_used: str = ""
-    created_at: str = ""
-    expires_at: str = ""
-    approved_at: str = ""
-    metadata: Dict = field(default_factory=dict)
+    @dataclass
+    class RegisteredUser:
+        user_id: bytes
+        username: str
+        role: UserRole
+        credentials: List[RegisteredCredential] = field(default_factory=list)
+        created_at: str = ""
+        allowed_paths: List[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        return {
-            'request_id': self.request_id,
-            'operation_type': self.operation_type,
-            'target': self.target,
-            'description': self.description,
-            'tier': self.tier.value,
-            'status': self.status.value,
-            'required_role': self.required_role.value,
-            'approved_by': self.approved_by,
-            'authenticator_used': self.authenticator_used,
-            'created_at': self.created_at,
-            'expires_at': self.expires_at,
-            'approved_at': self.approved_at,
-            'metadata': self.metadata,
-        }
+        def to_dict(self) -> dict:
+            return {
+                'user_id': base64.urlsafe_b64encode(self.user_id).decode(),
+                'username': self.username,
+                'role': self.role.value,
+                'credentials': [c.to_dict() for c in self.credentials],
+                'created_at': self.created_at,
+                'allowed_paths': self.allowed_paths,
+            }
 
-    def is_expired(self) -> bool:
-        if not self.expires_at:
-            return False
-        return datetime.fromisoformat(self.expires_at) < datetime.now()
+        @classmethod
+        def from_dict(cls, d: dict) -> 'RegisteredUser':
+            return cls(
+                user_id=base64.urlsafe_b64decode(d['user_id']),
+                username=d['username'],
+                role=UserRole(d['role']),
+                credentials=[RegisteredCredential.from_dict(c) for c in d.get('credentials', [])],
+                created_at=d.get('created_at', ''),
+                allowed_paths=d.get('allowed_paths', []),
+            )
+
+
+    @dataclass
+    class HardwareApprovalRequest:
+        request_id: str
+        operation_type: str
+        target: str
+        description: str
+        tier: ApprovalTier
+        status: ApprovalStatus = ApprovalStatus.PENDING
+        required_role: UserRole = UserRole.ADMIN
+        approved_by: str = ""
+        authenticator_used: str = ""
+        created_at: str = ""
+        expires_at: str = ""
+        approved_at: str = ""
+        metadata: Dict = field(default_factory=dict)
+
+        def to_dict(self) -> dict:
+            return {
+                'request_id': self.request_id,
+                'operation_type': self.operation_type,
+                'target': self.target,
+                'description': self.description,
+                'tier': self.tier.value,
+                'status': self.status.value,
+                'required_role': self.required_role.value,
+                'approved_by': self.approved_by,
+                'authenticator_used': self.authenticator_used,
+                'created_at': self.created_at,
+                'expires_at': self.expires_at,
+                'approved_at': self.approved_at,
+                'metadata': self.metadata,
+            }
+
+        def is_expired(self) -> bool:
+            if not self.expires_at:
+                return False
+            return datetime.fromisoformat(self.expires_at) < datetime.now()
 
 
 # =============================================================================

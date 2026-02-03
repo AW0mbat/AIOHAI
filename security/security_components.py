@@ -38,86 +38,102 @@ try:
 except ImportError:
     PSUTIL_AVAILABLE = False
 
+# Import shared types from aiohai.core.types
+# These were previously defined inline in this file
+try:
+    from aiohai.core.types import (
+        Severity, PIIType, Verdict,
+        SecurityFinding, PIIFinding, VerificationResult, ResourceLimits,
+        ResourceLimitExceeded
+    )
+    _TYPES_FROM_CORE = True
+except ImportError:
+    # Fallback: types defined inline below (for backward compat during transition)
+    _TYPES_FROM_CORE = False
+
 
 # =============================================================================
 # ENUMS
 # =============================================================================
+# Note: These are now primarily defined in aiohai.core.types
+# The definitions below are fallbacks for backward compatibility during transition
 
-class Severity(Enum):
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    CRITICAL = 4
-
-
-class PIIType(Enum):
-    EMAIL = "email"
-    PHONE = "phone"
-    SSN = "ssn"
-    CREDIT_CARD = "credit_card"
-    IP_ADDRESS = "ip_address"
-    USERNAME = "username"
-    FILEPATH_WITH_USER = "filepath_with_user"
-    AWS_KEY = "aws_key"
-    API_KEY = "api_key"
-    PRIVATE_KEY = "private_key"
-    PASSWORD = "password"
+if not _TYPES_FROM_CORE:
+    class Severity(Enum):
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+        CRITICAL = 4
 
 
-class Verdict(Enum):
-    SAFE = "safe"
-    SUSPICIOUS = "suspicious"
-    DANGEROUS = "dangerous"
-    BLOCKED = "blocked"
+    class PIIType(Enum):
+        EMAIL = "email"
+        PHONE = "phone"
+        SSN = "ssn"
+        CREDIT_CARD = "credit_card"
+        IP_ADDRESS = "ip_address"
+        USERNAME = "username"
+        FILEPATH_WITH_USER = "filepath_with_user"
+        AWS_KEY = "aws_key"
+        API_KEY = "api_key"
+        PRIVATE_KEY = "private_key"
+        PASSWORD = "password"
 
 
-# =============================================================================
-# DATA CLASSES
-# =============================================================================
-
-@dataclass
-class SecurityFinding:
-    severity: Severity
-    category: str
-    message: str
-    line: Optional[int]
-    code_snippet: str
-    cwe_id: Optional[str] = None
-    remediation: Optional[str] = None
+    class Verdict(Enum):
+        SAFE = "safe"
+        SUSPICIOUS = "suspicious"
+        DANGEROUS = "dangerous"
+        BLOCKED = "blocked"
 
 
-@dataclass
-class PIIFinding:
-    pii_type: PIIType
-    value: str
-    start: int
-    end: int
-    confidence: float
+    # =============================================================================
+    # DATA CLASSES
+    # =============================================================================
+
+    @dataclass
+    class SecurityFinding:
+        severity: Severity
+        category: str
+        message: str
+        line: Optional[int]
+        code_snippet: str
+        cwe_id: Optional[str] = None
+        remediation: Optional[str] = None
 
 
-@dataclass
-class VerificationResult:
-    verdict: Verdict
-    risk_score: int
-    concerns: List[str]
-    recommendation: str
-    reasoning: str
+    @dataclass
+    class PIIFinding:
+        pii_type: PIIType
+        value: str
+        start: int
+        end: int
+        confidence: float
 
 
-@dataclass
-class ResourceLimits:
-    max_execution_time_seconds: int = 30
-    max_session_time_minutes: int = 60
-    max_memory_mb: int = 512
-    max_memory_percent: float = 25.0
-    max_cpu_percent: float = 50.0
-    max_disk_write_mb: int = 100
-    max_file_size_mb: int = 50
-    max_files_created: int = 100
-    max_requests_per_minute: int = 60
-    max_actions_per_minute: int = 30
-    max_concurrent_actions: int = 5
-    max_output_size_bytes: int = 1_000_000
+    @dataclass
+    class VerificationResult:
+        verdict: Verdict
+        risk_score: int
+        concerns: List[str]
+        recommendation: str
+        reasoning: str
+
+
+    @dataclass
+    class ResourceLimits:
+        max_execution_time_seconds: int = 30
+        max_session_time_minutes: int = 60
+        max_memory_mb: int = 512
+        max_memory_percent: float = 25.0
+        max_cpu_percent: float = 50.0
+        max_disk_write_mb: int = 100
+        max_file_size_mb: int = 50
+        max_files_created: int = 100
+        max_requests_per_minute: int = 60
+        max_actions_per_minute: int = 30
+        max_concurrent_actions: int = 5
+        max_output_size_bytes: int = 1_000_000
 
 
 # =============================================================================
@@ -625,8 +641,9 @@ class ResourceLimiter:
             self.release_action_slot()
 
 
-class ResourceLimitExceeded(Exception):
-    pass
+if not _TYPES_FROM_CORE:
+    class ResourceLimitExceeded(Exception):
+        pass
 
 
 # =============================================================================

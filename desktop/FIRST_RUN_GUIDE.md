@@ -36,6 +36,7 @@ Move it so your AIOHAI repo looks like this:
 
 ```
 C:\AIOHAI\                    (or wherever your repo is)
+├── aiohai/           ← NEW in v4.0.0 (layered package)
 ├── proxy/
 ├── security/
 ├── config/

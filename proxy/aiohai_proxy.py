@@ -62,6 +62,18 @@ from typing import Optional, Dict, List, Tuple, Set
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
+
+# Import shared types from aiohai.core.types
+# These were previously defined inline in this file
+try:
+    from aiohai.core.types import (
+        SecurityLevel, ActionType, AlertSeverity, TrustLevel,
+        SecurityError, NetworkSecurityError
+    )
+    _TYPES_FROM_CORE = True
+except ImportError:
+    # Fallback: types defined inline below (for backward compat during transition)
+    _TYPES_FROM_CORE = False
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import urllib.request
@@ -130,48 +142,51 @@ else:
 # =============================================================================
 # ENUMS
 # =============================================================================
+# Note: These are now primarily defined in aiohai.core.types
+# The definitions below are fallbacks for backward compatibility during transition
 
-class SecurityLevel(Enum):
-    BLOCKED = auto()
-    CRITICAL = auto()
-    ELEVATED = auto()
-    STANDARD = auto()
-    ALLOWED = auto()
-
-
-class ActionType(Enum):
-    FILE_READ = auto()
-    FILE_WRITE = auto()
-    FILE_DELETE = auto()
-    COMMAND_EXEC = auto()
-    DIRECTORY_LIST = auto()
-    NETWORK_REQUEST = auto()
-    LOCAL_API_QUERY = auto()
-    DOCUMENT_OP = auto()
+if not _TYPES_FROM_CORE:
+    class SecurityLevel(Enum):
+        BLOCKED = auto()
+        CRITICAL = auto()
+        ELEVATED = auto()
+        STANDARD = auto()
+        ALLOWED = auto()
 
 
-class AlertSeverity(Enum):
-    INFO = "info"
-    WARNING = "warning"
-    HIGH = "high"
-    CRITICAL = "critical"
+    class ActionType(Enum):
+        FILE_READ = auto()
+        FILE_WRITE = auto()
+        FILE_DELETE = auto()
+        COMMAND_EXEC = auto()
+        DIRECTORY_LIST = auto()
+        NETWORK_REQUEST = auto()
+        LOCAL_API_QUERY = auto()
+        DOCUMENT_OP = auto()
 
 
-class TrustLevel(Enum):
-    TRUSTED = auto()
-    UNTRUSTED = auto()
-    HOSTILE = auto()
+    class AlertSeverity(Enum):
+        INFO = "info"
+        WARNING = "warning"
+        HIGH = "high"
+        CRITICAL = "critical"
 
 
-# =============================================================================
-# EXCEPTIONS
-# =============================================================================
+    class TrustLevel(Enum):
+        TRUSTED = auto()
+        UNTRUSTED = auto()
+        HOSTILE = auto()
 
-class SecurityError(Exception):
-    pass
 
-class NetworkSecurityError(SecurityError):
-    pass
+    # =============================================================================
+    # EXCEPTIONS
+    # =============================================================================
+
+    class SecurityError(Exception):
+        pass
+
+    class NetworkSecurityError(SecurityError):
+        pass
 
 
 # =============================================================================
