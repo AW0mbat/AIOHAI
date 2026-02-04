@@ -535,7 +535,7 @@ class TestConsistencyChecks:
         """Policy file should tell the LLM about HSM signing."""
         policy_path = Path(__file__).parent.parent / "policy" / "aiohai_security_policy_v3.0.md"
         if policy_path.exists():
-            content = policy_path.read_text()
+            content = policy_path.read_text(encoding='utf-8')
             assert 'HSM' in content or 'Nitrokey' in content, \
                 "Policy file doesn't mention HSM hardware signing"
 
@@ -543,7 +543,7 @@ class TestConsistencyChecks:
         """Policy file should describe the Tier 1/2/3 system."""
         policy_path = Path(__file__).parent.parent / "policy" / "aiohai_security_policy_v3.0.md"
         if policy_path.exists():
-            content = policy_path.read_text()
+            content = policy_path.read_text(encoding='utf-8')
             assert 'Tier 1' in content and 'Tier 2' in content and 'Tier 3' in content, \
                 "Policy file doesn't describe the tiered approval system"
 
@@ -551,6 +551,6 @@ class TestConsistencyChecks:
         """Policy file should document the lockdown mechanism."""
         policy_path = Path(__file__).parent.parent / "policy" / "aiohai_security_policy_v3.0.md"
         if policy_path.exists():
-            content = policy_path.read_text()
+            content = policy_path.read_text(encoding='utf-8')
             assert 'lockdown' in content.lower(), \
                 "Policy file doesn't mention integrity lockdown"

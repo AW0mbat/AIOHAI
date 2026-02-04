@@ -289,7 +289,7 @@ class TestReverseProxyBypass:
     def test_no_forwarded_header_trust(self):
         """Codebase must not contain X-Forwarded-For or X-Real-IP trust logic."""
         proxy_file = Path(__file__).parent.parent / "proxy" / "aiohai_proxy.py"
-        content = proxy_file.read_text()
+        content = proxy_file.read_text(encoding='utf-8')
         
         # These headers should NOT appear in auth/trust decisions
         dangerous_patterns = [
@@ -307,7 +307,7 @@ class TestReverseProxyBypass:
     def test_no_forwarded_header_in_fido2(self):
         """FIDO2 server must not trust proxy headers for auth."""
         fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
-        content = fido2_file.read_text()
+        content = fido2_file.read_text(encoding='utf-8')
         
         for pattern in ['X-Forwarded-For', 'X-Real-IP']:
             assert pattern not in content, (
@@ -317,7 +317,7 @@ class TestReverseProxyBypass:
     def test_fido2_api_uses_secret_not_ip(self):
         """FIDO2 internal API must authenticate via shared secret, not IP."""
         fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
-        content = fido2_file.read_text()
+        content = fido2_file.read_text(encoding='utf-8')
         
         assert 'X-AIOHAI-Secret' in content, "FIDO2 API secret header not found"
         assert 'hmac.compare_digest' in content, "FIDO2 API not using constant-time comparison"
@@ -325,7 +325,7 @@ class TestReverseProxyBypass:
     def test_fido2_secret_is_timing_safe(self):
         """Secret comparison must use hmac.compare_digest, not ==."""
         fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
-        content = fido2_file.read_text()
+        content = fido2_file.read_text(encoding='utf-8')
         
         # Find the _verify_api_secret method and confirm it uses hmac
         assert 'hmac.compare_digest(provided, self._api_secret)' in content
@@ -1003,7 +1003,7 @@ class TestCodeHygiene:
     def test_no_bare_excepts_in_proxy(self):
         """No bare 'except:' clauses in proxy code."""
         proxy_file = Path(__file__).parent.parent / "proxy" / "aiohai_proxy.py"
-        for i, line in enumerate(proxy_file.read_text().splitlines(), 1):
+        for i, line in enumerate(proxy_file.read_text(encoding='utf-8').splitlines(), 1):
             stripped = line.strip()
             if stripped == "except:" or stripped.startswith("except: "):
                 # Allow in comments
@@ -1013,7 +1013,7 @@ class TestCodeHygiene:
     def test_no_bare_excepts_in_security_components(self):
         """No bare 'except:' clauses in security_components.py."""
         sc_file = Path(__file__).parent.parent / "security" / "security_components.py"
-        for i, line in enumerate(sc_file.read_text().splitlines(), 1):
+        for i, line in enumerate(sc_file.read_text(encoding='utf-8').splitlines(), 1):
             stripped = line.strip()
             if stripped == "except:" or stripped.startswith("except: "):
                 if not line.lstrip().startswith('#'):
@@ -1025,7 +1025,7 @@ class TestCodeHygiene:
         for pyfile in root.rglob("*.py"):
             if '__pycache__' in str(pyfile) or 'test_' in pyfile.name:
                 continue
-            content = pyfile.read_text()
+            content = pyfile.read_text(encoding='utf-8')
             if 'verify=False' in content:
                 pytest.fail(f"verify=False found in {pyfile.relative_to(root)}")
 

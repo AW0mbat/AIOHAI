@@ -8,7 +8,9 @@ A layered security architecture for local AI agents:
 - proxy/       : AI-specific enforcement (action parsing, LLM context, execution)
 - agent/       : Future: Screen capture, supervised browsing, progressive trust
 
-Version: 4.0.0
+Version is defined in aiohai.core.version (single source of truth).
 """
 
-__version__ = "4.0.0"
+from aiohai.core.version import __version__
+
+__all__ = ['__version__']

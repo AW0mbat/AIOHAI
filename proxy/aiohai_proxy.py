@@ -70,10 +70,12 @@ try:
         SecurityLevel, ActionType, AlertSeverity, TrustLevel,
         SecurityError, NetworkSecurityError
     )
+    from aiohai.core.version import ALLOWED_FRAMEWORK_NAMES, POLICY_FILENAME
     _TYPES_FROM_CORE = True
 except ImportError:
     # Fallback: types defined inline below (for backward compat during transition)
     _TYPES_FROM_CORE = False
+    POLICY_FILENAME = "aiohai_security_policy_v3.0.md"  # Fallback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import urllib.request
@@ -454,14 +456,16 @@ DOH_SERVERS = [
     'doh.opendns.com', 'dns.adguard.com', 'doh.cleanbrowsing.org'
 ]
 
-# V-2 FIX: Allowed framework file names — shared between _load_frameworks
-# and IntegrityVerifier. Add new framework filenames here explicitly.
-ALLOWED_FRAMEWORK_NAMES = frozenset({
-    'ha_framework_v3.md',
-    'office_framework_v3.md',
-    'ha_framework_v4.md',
-    'office_framework_v4.md',
-})
+# V-2 FIX: Allowed framework file names — now imported from aiohai.core.version
+# The constant ALLOWED_FRAMEWORK_NAMES is defined there as the single source of truth.
+# Fallback definition for backward compatibility when aiohai.core is not available:
+if not _TYPES_FROM_CORE:
+    ALLOWED_FRAMEWORK_NAMES = frozenset({
+        'ha_framework_v3.md',
+        'office_framework_v3.md',
+        'ha_framework_v4.md',
+        'office_framework_v4.md',
+    })
 
 
 # =============================================================================
@@ -527,7 +531,7 @@ class UnifiedConfig:
     
     def __post_init__(self):
         if self.policy_file is None:
-            self.policy_file = self.base_dir / "policy" / "aiohai_security_policy_v3.0.md"
+            self.policy_file = self.base_dir / "policy" / POLICY_FILENAME
         if self.policy_signature_file is None:
             self.policy_signature_file = self.base_dir / "policy" / "policy.sig"
         if self.log_dir is None:

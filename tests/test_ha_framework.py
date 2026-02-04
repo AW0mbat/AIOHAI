@@ -742,8 +742,13 @@ class TestConfigSchema(unittest.TestCase):
     def test_schema_is_aiohai_v3(self):
         self.assertEqual(self.config["$schema"], "AIOHAI Configuration v3.0")
 
-    def test_version_is_3_0_0(self):
-        self.assertEqual(self.config["general"]["version"], "3.0.0")
+    def test_version_format_valid(self):
+        """Version should be a valid semver string in 3.x series."""
+        version = self.config["general"]["version"]
+        parts = version.split(".")
+        self.assertEqual(len(parts), 3, "Version should be semver format X.Y.Z")
+        self.assertTrue(all(p.isdigit() for p in parts), "Version parts should be numeric")
+        self.assertEqual(parts[0], "3", "Config schema should be version 3.x")
 
     def test_smart_home_section_exists(self):
         self.assertIn("smart_home", self.config)

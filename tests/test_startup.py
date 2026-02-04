@@ -293,7 +293,7 @@ class TestCORSConfiguration:
     def test_fido2_cors_restricted_to_api_and_auth(self):
         """FIDO2 CORS must only apply to /api/* and /auth/* paths."""
         fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
-        content = fido2_file.read_text()
+        content = fido2_file.read_text(encoding='utf-8')
         
         # CORS should be present (needed for phone access)
         assert 'CORS' in content
