@@ -3,7 +3,8 @@ import { Sidebar, type NavPage } from './components/layout/Sidebar';
 import { StatusBar } from './components/layout/StatusBar';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { ConnectionSetup } from './components/settings/ConnectionSetup';
-import { ChatPanel, ApprovalsPanel, LogViewerPanel } from './components/Placeholders';
+import { ChatPanel } from './components/chat';
+import { ApprovalsPanel, LogViewerPanel } from './components/Placeholders';
 import { OpenWebUIClient } from './services/OpenWebUIClient';
 import { useHealth } from './hooks/useHealth';
 import './types/electron';
@@ -32,7 +33,7 @@ const App: React.FC = () => {
   const renderPage = () => {
     switch (activePage) {
       case 'chat':
-        return <ChatPanel />;
+        return <ChatPanel client={client} />;
       case 'approvals':
         return <ApprovalsPanel />;
       case 'dashboard':

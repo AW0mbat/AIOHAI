@@ -1,66 +1,69 @@
 @echo off
-REM --- AIOHAI Desktop --- One-Click Startup ---
-REM Double-click this file to start everything.
-REM Press Ctrl+C in this window to shut everything down.
-
-echo.
-echo  ======================================
-echo       AIOHAI Desktop Launcher
-echo  ======================================
+title AIOHAI Startup
+echo ============================================
+echo  AIOHAI - Starting Services
+echo ============================================
 echo.
 
-REM --- Step 1: Start Open WebUI Docker container ---
-echo [1/4] Starting Open WebUI Docker container...
-docker start open-webui-dev >nul 2>&1
-if %errorlevel% equ 0 (
-    echo       OK - Open WebUI starting at http://localhost:3000
+:: Start Docker Desktop if not running
+echo [1/4] Checking Docker...
+tasklist /FI "IMAGENAME eq Docker Desktop.exe" 2>nul | find /I "Docker Desktop.exe" >nul
+if errorlevel 1 (
+    echo       Starting Docker Desktop...
+    start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
 ) else (
-    echo       FAIL - Could not start open-webui-dev container
-    echo         Make sure Docker Desktop is running
-    echo.
-    pause
-    exit /b 1
+    echo       Docker Desktop already running
 )
 
-REM --- Step 2: Navigate to desktop folder ---
-cd /d "%~dp0"
-echo [2/4] Building main process...
-call npm run build:main >nul 2>&1
-if %errorlevel% equ 0 (
-    echo       OK - Main process compiled
+:: Wait for Docker engine to be ready
+echo       Waiting for Docker engine...
+:WAIT_DOCKER
+docker info >nul 2>&1
+if errorlevel 1 (
+    timeout /t 2 >nul
+    goto WAIT_DOCKER
+)
+echo       Docker ready!
+
+:: Start Ollama if not running
+echo.
+echo [2/4] Checking Ollama...
+tasklist /FI "IMAGENAME eq ollama.exe" 2>nul | find /I "ollama.exe" >nul
+if errorlevel 1 (
+    echo       Starting Ollama...
+    start "" /B ollama serve >nul 2>&1
+    timeout /t 2 >nul
 ) else (
-    echo       FAIL - Build failed. Run "npm run build:main" manually to see errors
-    pause
-    exit /b 1
+    echo       Ollama already running
 )
 
-REM --- Step 3: Start Vite dev server in background ---
-echo [3/4] Starting Vite dev server...
-start /b "" cmd /c "npm run dev:renderer >nul 2>&1"
-
-REM Give Vite a moment to start
-timeout /t 3 /nobreak >nul
-echo       OK - Vite dev server running
-
-REM --- Step 4: Launch Electron ---
-echo [4/4] Launching AIOHAI Desktop...
+:: Start Open WebUI container if not running
 echo.
-echo  -----------------------------------------
-echo   App is running. Close the Electron
-echo   window or press Ctrl+C here to stop.
-echo  -----------------------------------------
+echo [3/4] Checking Open WebUI...
+docker ps 2>nul | find "open-webui" >nul
+if errorlevel 1 (
+    echo       Starting Open WebUI container...
+    docker start open-webui >nul 2>&1
+    timeout /t 3 >nul
+) else (
+    echo       Open WebUI already running
+)
+
+:: Verify services
+echo.
+echo [4/4] Verifying services...
+curl -s http://127.0.0.1:3000/api/config >nul 2>&1
+if errorlevel 1 (
+    echo       WARNING: Open WebUI not responding yet, waiting...
+    timeout /t 5 >nul
+)
+
+echo.
+echo ============================================
+echo  All services ready - Launching app
+echo ============================================
 echo.
 
-call npm run start
-
-REM --- Cleanup when Electron closes ---
-echo.
-echo Shutting down...
-
-REM Kill the Vite dev server
-taskkill /f /im node.exe >nul 2>&1
-
-echo Done. Docker container is still running.
-echo To stop it: docker stop open-webui-dev
-echo.
-pause
+:: Launch the Electron app (hidden console)
+wscript "C:\AIOHAI\desktop\launch-hidden.vbs"
+exit

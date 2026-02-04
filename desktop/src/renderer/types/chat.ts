@@ -2,6 +2,8 @@
  * Types for Open WebUI chat integration.
  */
 
+import type { ParsedAction } from './actions';
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -15,6 +17,9 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   model?: string;
+  
+  /** Parsed actions from assistant responses */
+  actions?: ParsedAction[];
 }
 
 export interface Model {

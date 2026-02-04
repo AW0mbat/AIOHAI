@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { HealthMonitor } from './services/HealthMonitor';
 import { LogWatcher } from './services/LogWatcher';
 import { ConfigManager } from './services/ConfigManager';
@@ -13,7 +14,11 @@ let logWatcher: LogWatcher | null = null;
 let configManager: ConfigManager | null = null;
 let isQuitting = false;
 
-const isDev = !app.isPackaged;
+// Check if we should run in dev mode:
+// - If AIOHAI_DEV env var is set, use dev mode
+// - Otherwise, check if built renderer exists
+const rendererPath = path.join(__dirname, '../renderer/index.html');
+const isDev = process.env.AIOHAI_DEV === '1' || !fs.existsSync(rendererPath);
 
 // ─── Window Creation ───────────────────────────────────────
 function createWindow(): void {
@@ -43,7 +48,7 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools();
   } else {
     // In production, load the built HTML
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    mainWindow.loadFile(rendererPath);
   }
 
   // Minimize to tray instead of closing
@@ -109,9 +114,9 @@ function initializeServices(): void {
   configManager = new ConfigManager(aiohaiPath);
 
   healthMonitor = new HealthMonitor({
-    openWebUIUrl: 'http://localhost:3000',   // Will be configurable via first-run setup
+    openWebUIUrl: 'http://127.0.0.1:3000',   // Updated to use 127.0.0.1
     fido2Url: 'https://localhost:8443',
-    ollamaUrl: 'http://localhost:11434',
+    ollamaUrl: 'http://127.0.0.1:11434',     // Updated to use 127.0.0.1
     pollIntervalMs: 10000,
   });
 
