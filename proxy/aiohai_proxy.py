@@ -4167,5 +4167,28 @@ def main():
     proxy.start()
 
 
+# =============================================================================
+# PHASE 4a: Override smart home class definitions with extracted core versions
+# =============================================================================
+# The class definitions above serve as fallbacks if aiohai.integrations is unavailable.
+# When available, the extracted versions are authoritative.
+try:
+    from aiohai.integrations.smart_home.service_registry import LocalServiceRegistry
+    from aiohai.integrations.smart_home.query_executor import LocalAPIQueryExecutor
+except ImportError:
+    pass  # Keep fallback class definitions from above
+
+# =============================================================================
+# PHASE 4b: Override office class definitions with extracted versions
+# =============================================================================
+try:
+    from aiohai.integrations.office.document_scanner import DocumentContentScanner
+    from aiohai.integrations.office.macro_blocker import MacroBlocker
+    from aiohai.integrations.office.metadata_sanitizer import MetadataSanitizer
+    from aiohai.integrations.office.graph_registry import GraphAPIRegistry
+except ImportError:
+    pass  # Keep fallback class definitions from above
+
+
 if __name__ == '__main__':
     main()

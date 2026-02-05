@@ -2245,3 +2245,22 @@ try:
     from aiohai.core.audit.transparency import SessionTransparencyTracker
 except ImportError:
     pass  # Keep fallback class definitions from above
+
+# =============================================================================
+# PHASE 4a: Override smart home class definitions with extracted versions
+# =============================================================================
+try:
+    from aiohai.integrations.smart_home.stack_detector import SmartHomeStackDetector
+    from aiohai.integrations.smart_home.config_analyzer import SmartHomeConfigAnalyzer
+    from aiohai.integrations.smart_home.notification import HomeAssistantNotificationBridge
+except ImportError:
+    pass  # Keep fallback class definitions from above
+
+# =============================================================================
+# PHASE 4b: Override office class definitions with extracted versions
+# =============================================================================
+try:
+    from aiohai.integrations.office.stack_detector import OfficeStackDetector
+    from aiohai.integrations.office.audit_logger import DocumentAuditLogger
+except ImportError:
+    pass  # Keep fallback class definitions from above
