@@ -544,616 +544,349 @@ if not _ALERTS_FROM_CORE:
 # STARTUP SECURITY VERIFIER
 # =============================================================================
 
-class StartupSecurityVerifier:
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger, alerts: AlertManager):
-        self.config = config
-        self.logger = logger
-        self.alerts = alerts
-    
-    def verify_all(self) -> Tuple[bool, List[str]]:
-        issues = []
-        
-        if self.config.refuse_admin and not self._verify_not_admin():
-            issues.append("CRITICAL: Running as Administrator")
-            return False, issues
-        
-        if self.config.verify_dll_integrity:
-            issues.extend(self._check_dll())
-        
-        if self._is_debugger():
-            issues.append("WARNING: Debugger attached")
-            self.alerts.alert(AlertSeverity.HIGH, "DEBUGGER_DETECTED", "Debugger attached")
-        
-        issues.extend(self._check_env())
-        
-        critical = [i for i in issues if i.startswith("CRITICAL")]
-        return len(critical) == 0, issues
-    
-    def _verify_not_admin(self) -> bool:
-        if not IS_WINDOWS:
-            return True
-        try:
-            if ctypes.windll.shell32.IsUserAnAdmin():
-                self.alerts.alert(AlertSeverity.CRITICAL, "RUNNING_AS_ADMIN",
-                                "Must NOT run as Administrator!")
-                return False
-            return True
-        except Exception:
-            return True  # Assume non-admin if check unavailable
-    
-    def _check_dll(self) -> List[str]:
-        issues = []
-        if IS_WINDOWS:
+# Phase 2a extraction: StartupSecurityVerifier now lives in aiohai.core.audit.startup
+try:
+    from aiohai.core.audit.startup import StartupSecurityVerifier
+    _STARTUP_FROM_CORE = True
+except ImportError:
+    _STARTUP_FROM_CORE = False
+
+if not _STARTUP_FROM_CORE:
+    class StartupSecurityVerifier:
+        def __init__(self, config: UnifiedConfig, logger: SecurityLogger, alerts: AlertManager):
+            self.config = config
+            self.logger = logger
+            self.alerts = alerts
+
+        def verify_all(self) -> Tuple[bool, List[str]]:
+            issues = []
+            if self.config.refuse_admin and not self._verify_not_admin():
+                issues.append("CRITICAL: Running as Administrator")
+                return False, issues
+            if self.config.verify_dll_integrity:
+                issues.extend(self._check_dll())
+            if self._is_debugger():
+                issues.append("WARNING: Debugger attached")
+                self.alerts.alert(AlertSeverity.HIGH, "DEBUGGER_DETECTED", "Debugger attached")
+            issues.extend(self._check_env())
+            critical = [i for i in issues if i.startswith("CRITICAL")]
+            return len(critical) == 0, issues
+
+        def _verify_not_admin(self) -> bool:
+            if not IS_WINDOWS: return True
             try:
-                ctypes.windll.kernel32.SetDllDirectoryW("")
-            except Exception:
-                pass  # DLL directory hardening is best-effort
-        return issues
-    
-    def _is_debugger(self) -> bool:
-        if IS_WINDOWS:
-            try:
-                return bool(ctypes.windll.kernel32.IsDebuggerPresent())
-            except Exception:
-                pass  # Debugger check unavailable on this platform
-        return False
-    
-    def _check_env(self) -> List[str]:
-        issues = []
-        bad_vars = ['OLLAMA_OVERRIDE', 'LLM_BYPASS', 'DEBUG_MODE', 'SKIP_SECURITY']
-        for var in bad_vars:
-            if os.environ.get(var):
-                issues.append(f"WARNING: Suspicious env: {var}")
-        return issues
+                if ctypes.windll.shell32.IsUserAnAdmin():
+                    self.alerts.alert(AlertSeverity.CRITICAL, "RUNNING_AS_ADMIN", "Must NOT run as Administrator!")
+                    return False
+                return True
+            except Exception: return True
+
+        def _check_dll(self) -> List[str]:
+            if IS_WINDOWS:
+                try: ctypes.windll.kernel32.SetDllDirectoryW("")
+                except Exception: pass
+            return []
+
+        def _is_debugger(self) -> bool:
+            if IS_WINDOWS:
+                try: return bool(ctypes.windll.kernel32.IsDebuggerPresent())
+                except Exception: pass
+            return False
+
+        def _check_env(self) -> List[str]:
+            issues = []
+            for var in ['OLLAMA_OVERRIDE', 'LLM_BYPASS', 'DEBUG_MODE', 'SKIP_SECURITY']:
+                if os.environ.get(var):
+                    issues.append(f"WARNING: Suspicious env: {var}")
+            return issues
 
 
 # =============================================================================
 # INTEGRITY VERIFIER
 # =============================================================================
 
-class IntegrityVerifier:
-    # Default check interval (seconds) — short enough to limit tampering window
-    DEFAULT_INTERVAL = 10
-    
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger, alerts: AlertManager):
-        self.config = config
-        self.logger = logger
-        self.alerts = alerts
-        self.policy_hash = None
-        self.framework_hashes = {}  # V-2 FIX: {filename: hash} for framework files
-        self.running = False
-        self.thread = None
-        self.lockdown = False  # Set True on tampering — blocks new requests
-        self._tampering_detected_at = None
-    
-    @property
-    def is_locked_down(self) -> bool:
-        return self.lockdown
-    
-    def compute_hash(self, path: Path) -> str:
-        sha256 = hashlib.sha256()
-        with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b''):
-                sha256.update(chunk)
-        return sha256.hexdigest()
-    
-    def verify_policy(self) -> bool:
-        if not self.config.policy_file.exists():
-            self.alerts.alert(AlertSeverity.CRITICAL, "POLICY_MISSING", 
-                            f"Policy not found: {self.config.policy_file}")
-            self._enter_lockdown("Policy file missing")
-            return False
-        
-        current = self.compute_hash(self.config.policy_file)
-        
-        if self.policy_hash is None:
-            self.policy_hash = current
-            self.logger.log_event("POLICY_LOADED", AlertSeverity.INFO, {'hash': current[:16]})
-            # V-2 FIX: Also hash framework files on first call
-            self._hash_frameworks()
-            return True
-        
-        if current != self.policy_hash:
-            self.alerts.alert(AlertSeverity.CRITICAL, "POLICY_TAMPERING", "Policy modified!")
-            self._enter_lockdown("Policy hash mismatch")
-            return False
-        
-        # V-2 FIX: Also verify framework hashes on every check
-        if not self._verify_frameworks():
-            return False
-        
-        return True
-    
-    def _hash_frameworks(self):
-        """V-2 FIX: Compute and store initial hashes for all allowed framework files."""
-        policy_dir = self.config.policy_file.parent
-        for fw_file in sorted(policy_dir.glob('*_framework_*.md')):
-            if fw_file.name in ALLOWED_FRAMEWORK_NAMES:
+# Phase 2a extraction: IntegrityVerifier now lives in aiohai.core.audit.integrity
+try:
+    from aiohai.core.audit.integrity import IntegrityVerifier
+    _INTEGRITY_FROM_CORE = True
+except ImportError:
+    _INTEGRITY_FROM_CORE = False
+
+if not _INTEGRITY_FROM_CORE:
+    class IntegrityVerifier:
+        DEFAULT_INTERVAL = 10
+        def __init__(self, config, logger, alerts):
+            self.config = config; self.logger = logger; self.alerts = alerts
+            self.policy_hash = None; self.framework_hashes = {}
+            self.running = False; self.thread = None
+            self.lockdown = False; self._tampering_detected_at = None
+        @property
+        def is_locked_down(self): return self.lockdown
+        def compute_hash(self, path):
+            sha256 = hashlib.sha256()
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b''): sha256.update(chunk)
+            return sha256.hexdigest()
+        def verify_policy(self):
+            if not self.config.policy_file.exists():
+                self._enter_lockdown("Policy file missing"); return False
+            current = self.compute_hash(self.config.policy_file)
+            if self.policy_hash is None:
+                self.policy_hash = current; self._hash_frameworks(); return True
+            if current != self.policy_hash:
+                self._enter_lockdown("Policy hash mismatch"); return False
+            return self._verify_frameworks()
+        def _hash_frameworks(self):
+            policy_dir = self.config.policy_file.parent
+            for fw_file in sorted(policy_dir.glob('*_framework_*.md')):
+                if fw_file.name in ALLOWED_FRAMEWORK_NAMES:
+                    try: self.framework_hashes[fw_file.name] = self.compute_hash(fw_file)
+                    except Exception: pass
+        def _verify_frameworks(self):
+            policy_dir = self.config.policy_file.parent
+            for fname, expected in self.framework_hashes.items():
+                fw_path = policy_dir / fname
+                if not fw_path.exists(): self._enter_lockdown(f"Framework deleted: {fname}"); return False
                 try:
-                    h = self.compute_hash(fw_file)
-                    self.framework_hashes[fw_file.name] = h
-                    self.logger.log_event("FRAMEWORK_HASH_RECORDED", AlertSeverity.INFO,
-                                          {'file': fw_file.name, 'hash': h[:16]})
-                except Exception as e:
-                    self.logger.log_event("FRAMEWORK_HASH_ERROR", AlertSeverity.WARNING,
-                                          {'file': fw_file.name, 'error': str(e)})
-    
-    def _verify_frameworks(self) -> bool:
-        """V-2 FIX: Verify framework file hashes haven't changed.
-        
-        Detects:
-        - Modified framework files (hash mismatch → lockdown)
-        - Deleted framework files that were present at startup (missing → lockdown)
-        - New framework files are handled by _load_frameworks allowlist (M-6)
-        """
-        policy_dir = self.config.policy_file.parent
-        for fname, expected_hash in self.framework_hashes.items():
-            fw_path = policy_dir / fname
-            if not fw_path.exists():
-                self.alerts.alert(AlertSeverity.CRITICAL, "FRAMEWORK_DELETED",
-                                  f"Framework file removed: {fname}")
-                self._enter_lockdown(f"Framework file deleted: {fname}")
-                return False
-            try:
-                current = self.compute_hash(fw_path)
-                if current != expected_hash:
-                    self.alerts.alert(AlertSeverity.CRITICAL, "FRAMEWORK_TAMPERING",
-                                      f"Framework modified: {fname}")
-                    self._enter_lockdown(f"Framework hash mismatch: {fname}")
-                    return False
-            except Exception as e:
-                self.alerts.alert(AlertSeverity.HIGH, "FRAMEWORK_VERIFY_ERROR",
-                                  f"Cannot verify {fname}: {e}")
-                self._enter_lockdown(f"Framework verification failed: {fname}")
-                return False
-        return True
-    
-    def _enter_lockdown(self, reason: str):
-        """Enter lockdown mode — proxy should refuse all new requests."""
-        if not self.lockdown:
-            self.lockdown = True
-            self._tampering_detected_at = time.time()
-            self.logger.log_event("LOCKDOWN_ACTIVATED", AlertSeverity.CRITICAL, {
-                'reason': reason,
-            })
-            print(f"\n{'='*70}")
-            print(f"🚨 LOCKDOWN: {reason}")
-            print(f"   All new requests will be rejected until restart.")
-            print(f"{'='*70}\n")
-    
-    def start_monitoring(self, interval: int = None) -> None:
-        interval = interval or self.DEFAULT_INTERVAL
-        self.running = True
-        self.thread = threading.Thread(target=self._loop, args=(interval,), daemon=True)
-        self.thread.start()
-    
-    def stop_monitoring(self) -> None:
-        self.running = False
-    
-    def _loop(self, interval: int):
-        while self.running:
-            time.sleep(interval)
-            self.verify_policy()
+                    if self.compute_hash(fw_path) != expected: self._enter_lockdown(f"Framework modified: {fname}"); return False
+                except Exception: self._enter_lockdown(f"Framework verify failed: {fname}"); return False
+            return True
+        def _enter_lockdown(self, reason):
+            if not self.lockdown:
+                self.lockdown = True; self._tampering_detected_at = time.time()
+                self.logger.log_event("LOCKDOWN_ACTIVATED", AlertSeverity.CRITICAL, {'reason': reason})
+        def start_monitoring(self, interval=None):
+            self.running = True
+            self.thread = threading.Thread(target=self._loop, args=(interval or self.DEFAULT_INTERVAL,), daemon=True)
+            self.thread.start()
+        def stop_monitoring(self): self.running = False
+        def _loop(self, interval):
+            while self.running: time.sleep(interval); self.verify_policy()
 
 
 # =============================================================================
 # NETWORK INTERCEPTOR (ENHANCED - DoH blocking)
 # =============================================================================
 
-class NetworkInterceptor:
-    """Socket-level network interception with DoH blocking."""
-    
-    _instance = None
-    _installed = False
-    
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger, alerts: AlertManager):
-        self.config = config
-        self.logger = logger
-        self.alerts = alerts
-        self._original_connect = None
-        self._original_getaddrinfo = None
-        self._original_gethostbyname = None
-        NetworkInterceptor._instance = self
-    
-    def install_hooks(self) -> None:
-        if NetworkInterceptor._installed:
-            return
-        
-        self._original_connect = socket.socket.connect
-        self._original_getaddrinfo = socket.getaddrinfo
-        self._original_gethostbyname = socket.gethostbyname
-        
-        socket.socket.connect = self._hooked_connect
-        socket.getaddrinfo = self._hooked_getaddrinfo
-        socket.gethostbyname = self._hooked_gethostbyname
-        
-        NetworkInterceptor._installed = True
-        self.logger.log_event("NETWORK_HOOKS_INSTALLED", AlertSeverity.INFO, {})
-    
-    @staticmethod
-    def _hooked_connect(sock_self, address):
-        inst = NetworkInterceptor._instance
-        try:
-            host = address[0] if isinstance(address, tuple) else str(address)
-            port = address[1] if isinstance(address, tuple) and len(address) > 1 else 0
-            
-            # Always allow localhost and Ollama
-            if host in ('127.0.0.1', 'localhost', '::1'):
-                pass
-            elif inst.config.enforce_network_allowlist:
-                # Check DoH servers (NEW)
-                if inst._is_doh_server(host):
-                    inst.logger.log_network(host, "DOH_BLOCKED", {'port': port})
-                    inst.alerts.alert(AlertSeverity.HIGH, "DOH_BLOCKED", f"DNS-over-HTTPS blocked: {host}")
-                    raise NetworkSecurityError(f"DoH server blocked: {host}")
-                
-                allowed, reason = inst._check_connection(host, port)
-                if not allowed:
-                    inst.logger.log_network(host, "BLOCKED", {'port': port, 'reason': reason})
-                    inst.alerts.alert(AlertSeverity.HIGH, "NETWORK_BLOCKED", f"Blocked: {host}:{port}")
-                    raise NetworkSecurityError(f"Connection blocked: {reason}")
-            
-            inst.logger.log_network(host, "ALLOWED", {'port': port})
-        except NetworkSecurityError:
-            raise
-        except Exception as e:
-            inst.logger.logger.debug(f"Connection check error: {e}")
-        
-        return inst._original_connect(sock_self, address)
-    
-    @staticmethod
-    def _hooked_getaddrinfo(host, port, *args, **kwargs):
-        inst = NetworkInterceptor._instance
-        
-        # Check DoH (NEW)
-        if inst._is_doh_server(host):
-            inst.logger.log_network(host, "DOH_DNS_BLOCKED", {})
-            raise NetworkSecurityError(f"DoH DNS lookup blocked: {host}")
-        
-        if inst._is_dns_exfiltration(host):
-            inst.logger.log_network(host, "DNS_EXFIL_BLOCKED", {})
-            inst.alerts.alert(AlertSeverity.HIGH, "DNS_EXFILTRATION", f"Blocked: {host[:50]}")
-            raise NetworkSecurityError("DNS exfiltration blocked")
-        
-        return inst._original_getaddrinfo(host, port, *args, **kwargs)
-    
-    @staticmethod
-    def _hooked_gethostbyname(hostname):
-        inst = NetworkInterceptor._instance
-        
-        if inst._is_doh_server(hostname):
-            raise NetworkSecurityError(f"DoH blocked: {hostname}")
-        
-        if inst._is_dns_exfiltration(hostname):
-            raise NetworkSecurityError("DNS exfiltration blocked")
-        
-        return inst._original_gethostbyname(hostname)
-    
-    def _is_doh_server(self, host: str) -> bool:
-        """Check if host is a DNS-over-HTTPS server."""
-        # SECURITY FIX (F-003): Exact or suffix match instead of substring
-        host_lower = host.lower()
-        for doh in DOH_SERVERS:
-            doh_lower = doh.lower()
-            if host_lower == doh_lower or host_lower.endswith('.' + doh_lower):
-                return True
-        return False
-    
-    def _check_connection(self, host: str, port: int) -> Tuple[bool, str]:
-        # SECURITY FIX (F-003): Exact or suffix match instead of substring
-        host_lower = host.lower()
-        for allowed in self.config.network_allowlist:
-            allowed_lower = allowed.lower()
-            if host_lower == allowed_lower or host_lower.endswith('.' + allowed_lower):
-                return True, "Allowlisted"
-        
-        # Block private IPs
-        private = [r'^10\.', r'^172\.(1[6-9]|2[0-9]|3[0-1])\.', 
-                   r'^192\.168\.', r'^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.']
-        for pattern in private:
-            if re.match(pattern, host):
-                return False, f"Private IP: {host}"
-        
-        return False, f"Not allowlisted: {host}"
-    
-    def _is_dns_exfiltration(self, hostname: str) -> bool:
-        if not hostname:
+# Phase 2a extraction: NetworkInterceptor now lives in aiohai.core.network.interceptor
+try:
+    from aiohai.core.network.interceptor import NetworkInterceptor
+    _NETWORK_FROM_CORE = True
+except ImportError:
+    _NETWORK_FROM_CORE = False
+
+if not _NETWORK_FROM_CORE:
+    class NetworkInterceptor:
+        """Socket-level network interception with DoH blocking. (Fallback)"""
+        _instance = None; _installed = False
+        def __init__(self, config, logger, alerts):
+            self.config = config; self.logger = logger; self.alerts = alerts
+            self._original_connect = None; self._original_getaddrinfo = None; self._original_gethostbyname = None
+            NetworkInterceptor._instance = self
+        def install_hooks(self):
+            if NetworkInterceptor._installed: return
+            self._original_connect = socket.socket.connect
+            self._original_getaddrinfo = socket.getaddrinfo
+            self._original_gethostbyname = socket.gethostbyname
+            socket.socket.connect = self._hooked_connect
+            socket.getaddrinfo = self._hooked_getaddrinfo
+            socket.gethostbyname = self._hooked_gethostbyname
+            NetworkInterceptor._installed = True
+        @staticmethod
+        def _hooked_connect(sock_self, address):
+            inst = NetworkInterceptor._instance
+            try:
+                host = address[0] if isinstance(address, tuple) else str(address)
+                port = address[1] if isinstance(address, tuple) and len(address) > 1 else 0
+                if host in ('127.0.0.1', 'localhost', '::1'): pass
+                elif inst.config.enforce_network_allowlist:
+                    if inst._is_doh_server(host): raise NetworkSecurityError(f"DoH blocked: {host}")
+                    allowed, reason = inst._check_connection(host, port)
+                    if not allowed: raise NetworkSecurityError(f"Blocked: {reason}")
+            except NetworkSecurityError: raise
+            except Exception: pass
+            return inst._original_connect(sock_self, address)
+        @staticmethod
+        def _hooked_getaddrinfo(host, port, *args, **kwargs):
+            inst = NetworkInterceptor._instance
+            if inst._is_doh_server(host): raise NetworkSecurityError(f"DoH blocked: {host}")
+            if inst._is_dns_exfiltration(host): raise NetworkSecurityError("DNS exfiltration blocked")
+            return inst._original_getaddrinfo(host, port, *args, **kwargs)
+        @staticmethod
+        def _hooked_gethostbyname(hostname):
+            inst = NetworkInterceptor._instance
+            if inst._is_doh_server(hostname): raise NetworkSecurityError(f"DoH blocked: {hostname}")
+            if inst._is_dns_exfiltration(hostname): raise NetworkSecurityError("DNS exfiltration blocked")
+            return inst._original_gethostbyname(hostname)
+        def _is_doh_server(self, host):
+            host_lower = host.lower()
+            for doh in DOH_SERVERS:
+                doh_lower = doh.lower()
+                if host_lower == doh_lower or host_lower.endswith('.' + doh_lower): return True
             return False
-        if len(hostname) > self.config.max_dns_query_length:
-            return True
-        
-        parts = hostname.split('.')
-        if len(parts) > 10:
-            return True
-        
-        for part in parts[:-2]:
-            if len(part) > 20:
-                entropy = self._entropy(part)
-                if entropy > self.config.max_dns_entropy:
-                    return True
-        return False
-    
-    def _entropy(self, text: str) -> float:
-        if not text:
-            return 0.0
-        freq = defaultdict(int)
-        for c in text:
-            freq[c] += 1
-        entropy = 0.0
-        for count in freq.values():
-            p = count / len(text)
-            if p > 0:
-                entropy -= p * math.log2(p)
-        return entropy
+        def _check_connection(self, host, port):
+            host_lower = host.lower()
+            for allowed in self.config.network_allowlist:
+                if host_lower == allowed.lower() or host_lower.endswith('.' + allowed.lower()): return True, "Allowlisted"
+            private = [r'^10\.', r'^172\.(1[6-9]|2[0-9]|3[0-1])\.', r'^192\.168\.', r'^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.']
+            for p in private:
+                if re.match(p, host): return False, f"Private IP: {host}"
+            return False, f"Not allowlisted: {host}"
+        def _is_dns_exfiltration(self, hostname):
+            if not hostname: return False
+            if len(hostname) > self.config.max_dns_query_length: return True
+            parts = hostname.split('.')
+            if len(parts) > 10: return True
+            for part in parts[:-2]:
+                if len(part) > 20:
+                    freq = defaultdict(int)
+                    for c in part: freq[c] += 1
+                    entropy = -sum((cnt/len(part)) * math.log2(cnt/len(part)) for cnt in freq.values() if cnt > 0)
+                    if entropy > self.config.max_dns_entropy: return True
+            return False
 
 
 # =============================================================================
 # CONTENT SANITIZER (ENHANCED)
 # =============================================================================
 
-class ContentSanitizer:
-    """Sanitizes input for injection attacks with enhanced detection."""
-    
-    def __init__(self, logger: SecurityLogger, alerts: AlertManager):
-        self.logger = logger
-        self.alerts = alerts
-        self.injection_patterns = [re.compile(p, re.I | re.M) for p in INJECTION_PATTERNS]
-    
-    def sanitize(self, content: str, source: str = "unknown") -> Tuple[str, List[Dict], TrustLevel]:
-        warnings = []
-        trust_level = TrustLevel.UNTRUSTED
-        
-        # 1. Remove invisible characters
-        for char in INVISIBLE_CHARS:
-            if char in content:
-                warnings.append({'type': 'INVISIBLE_CHAR', 'char': f'U+{ord(char):04X}'})
-                content = content.replace(char, '')
-        
-        # 2. Normalize homoglyphs
-        for cyrillic, latin in HOMOGLYPHS.items():
-            if cyrillic in content:
-                warnings.append({'type': 'HOMOGLYPH', 'char': f'U+{ord(cyrillic):04X}'})
-                content = content.replace(cyrillic, latin)
-        
-        # 3. Normalize fullwidth
-        for fw, ascii_char in FULLWIDTH_MAP.items():
-            if fw in content:
-                warnings.append({'type': 'FULLWIDTH', 'char': fw})
-                content = content.replace(fw, ascii_char)
-        
-        # 4. Detect injection patterns
-        for pattern in self.injection_patterns:
-            if pattern.search(content):
-                warnings.append({'type': 'INJECTION', 'pattern': pattern.pattern[:40]})
-                trust_level = TrustLevel.HOSTILE
-        
-        # 5. Detect obfuscation in content (NEW)
-        obfuscation_patterns = [
-            (r'[A-Za-z0-9+/]{50,}={0,2}', 'Long base64'),
-            (r'\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){10,}', 'Hex escapes'),
-            (r'\\u[0-9a-fA-F]{4}(?:\\u[0-9a-fA-F]{4}){5,}', 'Unicode escapes'),
-            (r'(?i)frombase64|b64decode|bytes\.fromhex', 'Decode function'),
-        ]
-        for pattern, desc in obfuscation_patterns:
-            if re.search(pattern, content):
-                warnings.append({'type': 'OBFUSCATION', 'desc': desc})
-                trust_level = TrustLevel.HOSTILE
-        
-        if trust_level == TrustLevel.HOSTILE:
-            self.alerts.alert(AlertSeverity.HIGH, "INJECTION_DETECTED",
-                            f"Hostile content from {source}",
-                            {'warnings': len(warnings)})
-        
-        if warnings:
-            self.logger.log_event("CONTENT_SANITIZED", AlertSeverity.WARNING,
-                                 {'source': source, 'warnings': len(warnings)})
-        
-        return content, warnings, trust_level
+# Phase 2a extraction: ContentSanitizer now lives in aiohai.core.analysis.sanitizer
+try:
+    from aiohai.core.analysis.sanitizer import ContentSanitizer
+    _SANITIZER_FROM_CORE = True
+except ImportError:
+    _SANITIZER_FROM_CORE = False
+
+if not _SANITIZER_FROM_CORE:
+    class ContentSanitizer:
+        """Sanitizes input for injection attacks. (Fallback)"""
+        def __init__(self, logger, alerts):
+            self.logger = logger; self.alerts = alerts
+            self.injection_patterns = [re.compile(p, re.I | re.M) for p in INJECTION_PATTERNS]
+        def sanitize(self, content, source="unknown"):
+            warnings = []; trust_level = TrustLevel.UNTRUSTED
+            for char in INVISIBLE_CHARS:
+                if char in content: warnings.append({'type': 'INVISIBLE_CHAR'}); content = content.replace(char, '')
+            for cyrillic, latin in HOMOGLYPHS.items():
+                if cyrillic in content: warnings.append({'type': 'HOMOGLYPH'}); content = content.replace(cyrillic, latin)
+            for fw, asc in FULLWIDTH_MAP.items():
+                if fw in content: warnings.append({'type': 'FULLWIDTH'}); content = content.replace(fw, asc)
+            for p in self.injection_patterns:
+                if p.search(content): warnings.append({'type': 'INJECTION'}); trust_level = TrustLevel.HOSTILE
+            for pat, desc in [(r'[A-Za-z0-9+/]{50,}={0,2}', 'base64'), (r'\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){10,}', 'hex')]:
+                if re.search(pat, content): warnings.append({'type': 'OBFUSCATION'}); trust_level = TrustLevel.HOSTILE
+            return content, warnings, trust_level
 
 
 # =============================================================================
 # PATH VALIDATOR
 # =============================================================================
 
-class PathValidator:
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger):
-        self.config = config
-        self.logger = logger
-        self.blocked_patterns = [re.compile(p, re.I) for p in BLOCKED_PATH_PATTERNS]
-        self.tier3_patterns = [re.compile(p, re.I) for p in TIER3_PATH_PATTERNS]
-    
-    def validate(self, path: str) -> Tuple[bool, str, str]:
-        """Validate a path. Returns (allowed, resolved_path, reason).
-        
-        Three possible outcomes:
-          - (False, path, "Blocked pattern")  → hard block, no approval possible
-          - (True,  path, "Tier 3 required")  → allowed only with FIDO2 approval
-          - (True,  path, "OK")               → normal tier classification
-        """
-        try:
-            if path.startswith('\\\\'):
-                return False, path, "UNC paths blocked"
-            if path.startswith('\\\\.\\') or path.startswith('\\\\?\\'):
-                return False, path, "Device paths blocked"
-            
-            # ADS check
-            path_no_drive = path[2:] if len(path) >= 2 and path[1] == ':' else path
-            if ':' in path_no_drive:
-                return False, path, "ADS blocked"
-            
-            # Convert short names
-            if IS_WINDOWS and PYWIN32_AVAILABLE and os.path.exists(path):
-                try:
-                    path = win32api.GetLongPathName(path)
-                except Exception:
-                    pass  # Short name conversion failed, use original path
-            
-            resolved = os.path.abspath(os.path.normpath(os.path.realpath(path)))
-            
-            if '..' in path:
-                return False, resolved, "Path traversal"
-            
-            if IS_WINDOWS:
-                drive = os.path.splitdrive(resolved)[0].upper()
-                if drive and drive not in self.config.allowed_drives:
-                    return False, resolved, f"Drive {drive} not allowed"
-            
-            # Check hard blocks first
-            for pattern in self.blocked_patterns:
-                if pattern.search(resolved):
-                    return False, resolved, "Blocked pattern"
-            
-            # Check tier-3 patterns (allowed, but requires hardware approval)
-            for pattern in self.tier3_patterns:
-                if pattern.search(resolved):
-                    return True, resolved, "Tier 3 required"
-            
-            # Symlink check (resolve and re-check both block lists)
-            if IS_WINDOWS and PYWIN32_AVAILABLE and os.path.exists(resolved):
-                try:
-                    attrs = win32file.GetFileAttributes(resolved)
-                    if attrs & 0x400:  # REPARSE_POINT
-                        target = os.path.realpath(resolved)
-                        for pattern in self.blocked_patterns:
-                            if pattern.search(target):
-                                return False, resolved, "Symlink target blocked"
-                        for pattern in self.tier3_patterns:
-                            if pattern.search(target):
-                                return True, resolved, "Tier 3 required"
-                except Exception:
-                    pass  # Attribute check failed, allow path through
-            
-            return True, resolved, "OK"
-        except Exception as e:
-            return False, path, f"Error: {e}"
+# Phase 2a extraction: PathValidator now lives in aiohai.core.access.path_validator
+try:
+    from aiohai.core.access.path_validator import PathValidator
+    _PATH_FROM_CORE = True
+except ImportError:
+    _PATH_FROM_CORE = False
+
+if not _PATH_FROM_CORE:
+    class PathValidator:
+        def __init__(self, config, logger):
+            self.config = config; self.logger = logger
+            self.blocked_patterns = [re.compile(p, re.I) for p in BLOCKED_PATH_PATTERNS]
+            self.tier3_patterns = [re.compile(p, re.I) for p in TIER3_PATH_PATTERNS]
+        def validate(self, path):
+            try:
+                if path.startswith('\\\\'): return False, path, "UNC paths blocked"
+                if path.startswith('\\\\.\\') or path.startswith('\\\\?\\'): return False, path, "Device paths blocked"
+                path_no_drive = path[2:] if len(path) >= 2 and path[1] == ':' else path
+                if ':' in path_no_drive: return False, path, "ADS blocked"
+                if IS_WINDOWS and PYWIN32_AVAILABLE and os.path.exists(path):
+                    try: path = win32api.GetLongPathName(path)
+                    except Exception: pass
+                resolved = os.path.abspath(os.path.normpath(os.path.realpath(path)))
+                if '..' in path: return False, resolved, "Path traversal"
+                if IS_WINDOWS:
+                    drive = os.path.splitdrive(resolved)[0].upper()
+                    if drive and drive not in self.config.allowed_drives: return False, resolved, f"Drive {drive} not allowed"
+                for p in self.blocked_patterns:
+                    if p.search(resolved): return False, resolved, "Blocked pattern"
+                for p in self.tier3_patterns:
+                    if p.search(resolved): return True, resolved, "Tier 3 required"
+                return True, resolved, "OK"
+            except Exception as e: return False, path, f"Error: {e}"
 
 
 # =============================================================================
 # COMMAND VALIDATOR (ENHANCED)
 # =============================================================================
 
-class CommandValidator:
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger,
-                 macro_blocker: 'MacroBlocker' = None):
-        self.config = config
-        self.logger = logger
-        self.blocked_patterns = [re.compile(p, re.I) for p in BLOCKED_COMMAND_PATTERNS]
-        self.uac_patterns = [re.compile(p, re.I) for p in UAC_BYPASS_PATTERNS]
-        self.macro_blocker = macro_blocker
-    
-    def validate(self, command: str) -> Tuple[bool, str]:
-        # Blocked patterns
-        for pattern in self.blocked_patterns:
-            if pattern.search(command):
-                return False, f"Blocked: {pattern.pattern[:40]}"
-        
-        # UAC bypass
-        for pattern in self.uac_patterns:
-            if pattern.search(command):
-                return False, "UAC bypass pattern"
-        
-        # OFFICE: Block macro execution commands (VBScript, CScript, Office /m switches)
-        if self.macro_blocker:
-            macro_ok, macro_reason = self.macro_blocker.check_command_for_macro_execution(command)
-            if not macro_ok:
-                return False, macro_reason
-        
-        # Parse executable
-        try:
-            args = shlex.split(command)
-            if not args:
-                return False, "Empty command"
-            
-            exe = os.path.basename(args[0]).lower()
-            if exe not in self.config.whitelisted_executables:
-                return False, f"Not whitelisted: {exe}"
-            
-            # Docker-specific tier validation
-            if exe in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'):
-                tier_ok, tier_reason = self._validate_docker_command(args)
-                if not tier_ok:
-                    return False, tier_reason
-        except Exception as e:
-            return False, f"Parse error: {e}"
-        
-        # Obfuscation check
-        if self._is_obfuscated(command):
-            return False, "Obfuscation detected"
-        
-        return True, "OK"
-    
-    def get_docker_tier(self, command: str) -> str:
-        """Return the tier classification for a docker command."""
-        try:
-            args = shlex.split(command)
-            exe = os.path.basename(args[0]).lower()
-            if exe not in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'):
-                return 'unknown'
-            return self._classify_docker_subcommand(args)
-        except Exception:
-            return 'unknown'
-    
-    def _validate_docker_command(self, args: List[str]) -> Tuple[bool, str]:
-        """Validate docker command against tier system."""
-        tier = self._classify_docker_subcommand(args)
-        subcommand = ' '.join(args[1:3]) if len(args) > 1 else '(none)'
-        
-        if tier == 'blocked':
-            self.logger.log_blocked("DOCKER_COMMAND", subcommand, "Docker subcommand not permitted")
-            return False, f"Docker '{subcommand}' is blocked (tier: blocked)"
-        
-        # standard, elevated, critical all pass validation
-        # (approval UI handles the tier display)
-        return True, f"Docker tier: {tier}"
-    
-    def _classify_docker_subcommand(self, args: List[str]) -> str:
-        """Classify a docker command into its tier."""
-        if len(args) < 2:
-            return 'standard'  # Bare 'docker' with no args
-        
-        exe = os.path.basename(args[0]).lower()
-        
-        # docker-compose commands
-        if exe in ('docker-compose', 'docker-compose.exe'):
+# Phase 2a extraction: CommandValidator now lives in aiohai.core.access.command_validator
+try:
+    from aiohai.core.access.command_validator import CommandValidator
+    _COMMAND_FROM_CORE = True
+except ImportError:
+    _COMMAND_FROM_CORE = False
+
+if not _COMMAND_FROM_CORE:
+    class CommandValidator:
+        def __init__(self, config, logger, macro_blocker=None):
+            self.config = config; self.logger = logger
+            self.blocked_patterns = [re.compile(p, re.I) for p in BLOCKED_COMMAND_PATTERNS]
+            self.uac_patterns = [re.compile(p, re.I) for p in UAC_BYPASS_PATTERNS]
+            self.macro_blocker = macro_blocker
+        def validate(self, command):
+            for p in self.blocked_patterns:
+                if p.search(command): return False, f"Blocked: {p.pattern[:40]}"
+            for p in self.uac_patterns:
+                if p.search(command): return False, "UAC bypass pattern"
+            if self.macro_blocker:
+                ok, reason = self.macro_blocker.check_command_for_macro_execution(command)
+                if not ok: return False, reason
+            try:
+                args = shlex.split(command)
+                if not args: return False, "Empty command"
+                exe = os.path.basename(args[0]).lower()
+                if exe not in self.config.whitelisted_executables: return False, f"Not whitelisted: {exe}"
+                if exe in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'):
+                    tier_ok, tier_reason = self._validate_docker_command(args)
+                    if not tier_ok: return False, tier_reason
+            except Exception as e: return False, f"Parse error: {e}"
+            if self._is_obfuscated(command): return False, "Obfuscation detected"
+            return True, "OK"
+        def get_docker_tier(self, command):
+            try:
+                args = shlex.split(command)
+                exe = os.path.basename(args[0]).lower()
+                if exe not in ('docker', 'docker.exe', 'docker-compose', 'docker-compose.exe'): return 'unknown'
+                return self._classify_docker_subcommand(args)
+            except Exception: return 'unknown'
+        def _validate_docker_command(self, args):
+            tier = self._classify_docker_subcommand(args)
+            sub = ' '.join(args[1:3]) if len(args) > 1 else '(none)'
+            if tier == 'blocked': return False, f"Docker '{sub}' blocked"
+            return True, f"Docker tier: {tier}"
+        def _classify_docker_subcommand(self, args):
+            if len(args) < 2: return 'standard'
             check_cmd = args[1].lower() if len(args) > 1 else ''
-        else:
-            # docker commands: handle 'docker compose' (new CLI) vs 'docker <cmd>'
-            check_cmd = args[1].lower() if len(args) > 1 else ''
-        
-        # Check two-word commands first (e.g., 'compose up', 'network ls')
-        if len(args) > 2:
-            two_word = f"{args[1].lower()} {args[2].lower()}"
-            for tier_name in ('blocked', 'critical', 'elevated', 'standard'):
-                if two_word in DOCKER_COMMAND_TIERS[tier_name]:
-                    return tier_name
-        
-        # Check single-word command
-        for tier_name in ('blocked', 'critical', 'elevated', 'standard'):
-            if check_cmd in DOCKER_COMMAND_TIERS[tier_name]:
-                return tier_name
-        
-        return 'elevated'  # Unknown commands default to elevated
-    
-    def _is_obfuscated(self, cmd: str) -> bool:
-        if len(cmd) < 20:
-            return False
-        indicators = 0
-        
-        special = len(re.findall(r'[`$\[\]{}()\\^]', cmd))
-        if len(cmd) > 0 and special / len(cmd) > 0.15:
-            indicators += 1
-        if re.search(r'["\'][^"\']{1,10}["\']\s*\+\s*["\']', cmd):
-            indicators += 1
-        if re.search(r'\$\w+\s*=\s*["\'].*["\']\s*;', cmd):
-            indicators += 1
-        if re.search(r'\[char\]|\[int\].*-join', cmd, re.I):
-            indicators += 1
-        if cmd.count('^') > 5:
-            indicators += 1
-        if re.search(r'[A-Za-z0-9+/]{40,}={0,2}', cmd):
-            indicators += 1
-        
-        return indicators >= 2
+            if len(args) > 2:
+                two_word = f"{args[1].lower()} {args[2].lower()}"
+                for t in ('blocked', 'critical', 'elevated', 'standard'):
+                    if two_word in DOCKER_COMMAND_TIERS[t]: return t
+            for t in ('blocked', 'critical', 'elevated', 'standard'):
+                if check_cmd in DOCKER_COMMAND_TIERS[t]: return t
+            return 'elevated'
+        def _is_obfuscated(self, cmd):
+            if len(cmd) < 20: return False
+            ind = 0
+            special = len(re.findall(r'[`$\[\]{}()\\^]', cmd))
+            if len(cmd) > 0 and special / len(cmd) > 0.15: ind += 1
+            if re.search(r'["\'][^"\']{1,10}["\']\s*\+\s*["\']', cmd): ind += 1
+            if re.search(r'\$\w+\s*=\s*["\'].*["\']\s*;', cmd): ind += 1
+            if re.search(r'\[char\]|\[int\].*-join', cmd, re.I): ind += 1
+            if cmd.count('^') > 5: ind += 1
+            if re.search(r'[A-Za-z0-9+/]{40,}={0,2}', cmd): ind += 1
+            return ind >= 2
 
 
 # =============================================================================

@@ -144,6 +144,10 @@ if not _TYPES_FROM_CORE:
 # STATIC SECURITY ANALYZER
 # =============================================================================
 
+# Phase 2b: These 7 classes are now in aiohai.core.*
+# The class definitions below are kept as fallbacks.
+# At end of file, we re-import from core to ensure core versions win.
+
 class StaticSecurityAnalyzer:
     """
     Comprehensive static analysis for code/commands before execution.
@@ -2224,3 +2228,20 @@ class DocumentAuditLogger:
     def _get_ext(self, path: str) -> str:
         """Extract file extension."""
         return Path(path).suffix.lower()
+
+
+# =============================================================================
+# PHASE 2b: Override class definitions with extracted core versions
+# =============================================================================
+# The class definitions above serve as fallbacks if aiohai.core is unavailable.
+# When available, the core versions are authoritative.
+try:
+    from aiohai.core.analysis.static_analyzer import StaticSecurityAnalyzer
+    from aiohai.core.analysis.pii_protector import PIIProtector
+    from aiohai.core.analysis.credentials import CredentialRedactor
+    from aiohai.core.analysis.sensitive_ops import SensitiveOperationDetector
+    from aiohai.core.analysis.multi_stage import MultiStageDetector
+    from aiohai.core.resources.limiter import ResourceLimiter
+    from aiohai.core.audit.transparency import SessionTransparencyTracker
+except ImportError:
+    pass  # Keep fallback class definitions from above

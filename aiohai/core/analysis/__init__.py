@@ -4,15 +4,10 @@ Content Analysis — Sanitization, PII protection, static analysis.
 Submodules:
 - sanitizer: Content sanitization, injection detection, trust levels
 - pii_protector: PII detection and redaction
-- static_analyzer: Bandit-style static analysis, sensitive operation detection
+- static_analyzer: Bandit-style static analysis of generated code
+- sensitive_ops: Categorize and flag sensitive operations
+- credentials: Credential redaction for safe display
 - multi_stage: Multi-stage attack pattern detection
-
-Classes:
-- ContentSanitizer: Injection scanning, Unicode normalization, trust levels
-- PIIProtector: Redact emails, SSNs, phone numbers, IPs
-- StaticSecurityAnalyzer: Bandit-style static analysis of generated code
-- SensitiveOperationDetector: Categorize and flag sensitive operations
-- MultiStageDetector: Detect reconnaissance → weaponization → execution chains
 """
 
 from aiohai.core.analysis.sanitizer import (
@@ -29,34 +24,46 @@ from aiohai.core.analysis.pii_protector import (
 
 from aiohai.core.analysis.static_analyzer import (
     StaticSecurityAnalyzer,
-    SensitiveOperationDetector,
     Severity,
-    Verdict,
     SecurityFinding,
+)
+
+from aiohai.core.analysis.sensitive_ops import (
+    SensitiveOperationDetector,
+)
+
+from aiohai.core.analysis.credentials import (
+    CredentialRedactor,
 )
 
 from aiohai.core.analysis.multi_stage import (
     MultiStageDetector,
 )
 
+# Re-export Verdict from types for backward compat
+from aiohai.core.types import Verdict
+
 __all__ = [
     # Sanitizer
     'ContentSanitizer',
     'INJECTION_PATTERNS',
     'TrustLevel',
-    
+
     # PII
     'PIIProtector',
     'PIIType',
     'PIIFinding',
-    
+
     # Static analysis
     'StaticSecurityAnalyzer',
     'SensitiveOperationDetector',
     'Severity',
     'Verdict',
     'SecurityFinding',
-    
+
+    # Credentials
+    'CredentialRedactor',
+
     # Multi-stage
     'MultiStageDetector',
 ]

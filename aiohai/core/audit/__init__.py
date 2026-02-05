@@ -13,6 +13,7 @@ from aiohai.core.types import AlertSeverity
 from aiohai.core.audit.integrity import IntegrityVerifier, ALLOWED_FRAMEWORK_NAMES
 from aiohai.core.audit.transparency import SessionTransparencyTracker
 from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.audit.startup import StartupSecurityVerifier
 
 __all__ = [
     'SecurityLogger',
@@ -21,4 +22,5 @@ __all__ = [
     'ALLOWED_FRAMEWORK_NAMES',
     'SessionTransparencyTracker',
     'AlertManager',
+    'StartupSecurityVerifier',
 ]

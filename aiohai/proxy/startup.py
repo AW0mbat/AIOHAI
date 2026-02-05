@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Startup Security Verifier - Pre-flight security checks."""
-import logging
-logger = logging.getLogger("aiohai.proxy.startup")
+"""Startup Security Verifier - re-export from aiohai.core.audit.startup."""
 
 try:
-    from proxy.aiohai_proxy import StartupSecurityVerifier
+    from aiohai.core.audit.startup import StartupSecurityVerifier
 except ImportError:
-    class StartupSecurityVerifier:
-        @staticmethod
-        def verify(): raise ImportError("Requires proxy module")
+    from proxy.aiohai_proxy import StartupSecurityVerifier
 
 __all__ = ['StartupSecurityVerifier']
