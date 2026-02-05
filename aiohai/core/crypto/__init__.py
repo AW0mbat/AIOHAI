@@ -25,9 +25,11 @@ from aiohai.core.crypto.hsm_bridge import (
     HSM_KEY_LABELS,
 )
 
+# Operation Classifier
+from aiohai.core.crypto.classifier import OperationClassifier
+
 # FIDO2 Gate
 from aiohai.core.crypto.fido_gate import (
-    OperationClassifier,
     CredentialStore,
     FIDO2ApprovalServer,
     FIDO2ApprovalClient,

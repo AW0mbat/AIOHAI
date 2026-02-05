@@ -1306,3 +1306,23 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# =============================================================================
+# CORE RE-IMPORTS — prefer aiohai.core.crypto versions when available
+# =============================================================================
+# Phase 3 extraction: these classes now live in aiohai/core/crypto/.
+# The re-import block below overrides the local definitions with the
+# extracted versions, ensuring that `from security.fido2_approval import X`
+# returns the same objects as `from aiohai.core.crypto import X`.
+
+try:
+    from aiohai.core.crypto.classifier import OperationClassifier
+    from aiohai.core.crypto.credentials import CredentialStore
+    from aiohai.core.crypto.fido_gate import (
+        FIDO2ApprovalServer, FIDO2ApprovalClient,
+        FIDO2_AVAILABLE, FLASK_AVAILABLE, CRYPTO_AVAILABLE,
+    )
+except ImportError:
+    pass  # Keep fallback class definitions from above
+
