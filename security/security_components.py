@@ -46,6 +46,10 @@ try:
         SecurityFinding, PIIFinding, VerificationResult, ResourceLimits,
         ResourceLimitExceeded
     )
+    from aiohai.core.patterns import (
+        FINANCIAL_PATH_PATTERNS, CLIPBOARD_BLOCK_PATTERNS,
+        TRUSTED_DOCKER_REGISTRIES,
+    )
     _TYPES_FROM_CORE = True
 except ImportError:
     # Fallback: types defined inline below (for backward compat during transition)
@@ -802,89 +806,15 @@ class CredentialRedactor:
 
 
 # =============================================================================
-# ENHANCED BLOCKED PATTERNS
+# ENHANCED BLOCKED PATTERNS — imported from aiohai.core.patterns when available
 # =============================================================================
 
-# Financial software and data paths
-FINANCIAL_PATH_PATTERNS = [
-    # Tax software
-    r'(?i)turbotax', r'(?i)taxact', r'(?i)h&r\s*block', r'(?i)taxcut',
-    r'(?i)\\tax\s*return', r'(?i)\\taxes\\',
-    
-    # Financial software
-    r'(?i)quicken', r'(?i)\\qdata\\', r'(?i)\.qdf$', r'(?i)\.qfx$',
-    r'(?i)quickbooks', r'(?i)\.qbw$', r'(?i)\.qbb$',
-    r'(?i)\\mint\\', r'(?i)\\ynab\\', r'(?i)\.ynab4$',
-    r'(?i)gnucash', r'(?i)moneydance', r'(?i)\\money\\',
-    
-    # Banking/financial exports
-    r'(?i)bank.*statement', r'(?i)financial.*record',
-    r'(?i)account.*export', r'(?i)transaction.*history',
-    r'(?i)passwords?\.csv', r'(?i)passwords?\.xlsx?',
-    r'(?i)password.*export', r'(?i)credential.*export',
-    r'(?i)\\statements?\\', r'(?i)\\banking\\',
-    
-    # Investment
-    r'(?i)\\fidelity\\', r'(?i)\\schwab\\', r'(?i)\\vanguard\\',
-    r'(?i)\\etrade\\', r'(?i)\\robinhood\\',
-    r'(?i)brokerage.*statement', r'(?i)investment.*record',
-    r'(?i)\\portfolio\\',
-    
-    # Crypto wallets
-    r'(?i)wallet\.dat', r'(?i)\\bitcoin\\', r'(?i)\\ethereum\\',
-    r'(?i)\\crypto\\', r'(?i)seed.*phrase', r'(?i)recovery.*phrase',
-    
-    # Insurance/medical (often has financial info)
-    r'(?i)insurance.*claim', r'(?i)medical.*bill',
-    r'(?i)\\insurance\\', r'(?i)\\claims\\',
-]
+if not _TYPES_FROM_CORE:
+    # Fallback definitions (only used without aiohai package)
+    FINANCIAL_PATH_PATTERNS = [r'(?i)turbotax', r'(?i)quicken']
+    CLIPBOARD_BLOCK_PATTERNS = [r'(?i)\bclip\b', r'(?i)set-clipboard']
+    TRUSTED_DOCKER_REGISTRIES = ['ghcr.io/home-assistant/', 'docker.io/library/']
 
-# Enhanced clipboard blocking patterns
-CLIPBOARD_BLOCK_PATTERNS = [
-    # PowerShell clipboard
-    r'(?i)\bclip\b', r'(?i)set-clipboard', r'(?i)get-clipboard',
-    r'(?i)\[System\.Windows\.Forms\.Clipboard\]',
-    r'(?i)Add-Type.*System\.Windows\.Forms.*Clipboard',
-    
-    # Python clipboard modules
-    r'(?i)\bpyperclip\b', r'(?i)\bxerox\b', r'(?i)\bclipboard\b',
-    r'(?i)import\s+pyperclip', r'(?i)import\s+clipboard',
-    r'(?i)from\s+xerox\s+import',
-    
-    # .NET clipboard
-    r'(?i)System\.Windows\.Clipboard',
-    r'(?i)Clipboard\.SetText', r'(?i)Clipboard\.GetText',
-    r'(?i)Clipboard\.SetData', r'(?i)Clipboard\.GetData',
-    
-    # Win32 API
-    r'(?i)OpenClipboard', r'(?i)SetClipboardData', r'(?i)GetClipboardData',
-    r'(?i)EmptyClipboard', r'(?i)CloseClipboard',
-    
-    # xclip/xsel (Linux but good to block)
-    r'(?i)\bxclip\b', r'(?i)\bxsel\b',
-]
-
-# Trusted Docker registries
-TRUSTED_DOCKER_REGISTRIES = [
-    'ghcr.io/home-assistant/',
-    'ghcr.io/blakeblackshear/',
-    'ghcr.io/koush/',
-    'ghcr.io/esphome/',
-    'docker.io/library/',
-    'docker.io/homeassistant/',
-    'docker.io/linuxserver/',
-    'docker.io/portainer/',
-    'lscr.io/linuxserver/',
-    'homeassistant/',  # Docker Hub official
-    'eclipse-mosquitto',
-    'postgres:',
-    'redis:',
-    'mariadb:',
-    'mysql:',
-    'mongo:',
-    'influxdb:',
-    'grafana/',
-]
 
 
 # =============================================================================

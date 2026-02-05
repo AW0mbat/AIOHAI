@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
 
-# Import shared types from aiohai.core.types
+# Import shared types, patterns, constants, and templates from aiohai.core
 # These were previously defined inline in this file
 try:
     from aiohai.core.types import (
@@ -71,6 +71,25 @@ try:
         SecurityError, NetworkSecurityError
     )
     from aiohai.core.version import ALLOWED_FRAMEWORK_NAMES, POLICY_FILENAME
+    from aiohai.core.patterns import (
+        BLOCKED_PATH_PATTERNS, TIER3_PATH_PATTERNS,
+        BLOCKED_COMMAND_PATTERNS, UAC_BYPASS_PATTERNS,
+        INJECTION_PATTERNS, INVISIBLE_CHARS, HOMOGLYPHS, FULLWIDTH_MAP,
+        DOH_SERVERS,
+        MACRO_ENABLED_EXTENSIONS, SAFE_OFFICE_EXTENSIONS, OFFICE_SCANNABLE_EXTENSIONS,
+        BLOCKED_EXCEL_FORMULAS, BLOCKED_EMBED_EXTENSIONS,
+        BLOCKED_GRAPH_ENDPOINTS, BLOCKED_GRAPH_SCOPES,
+    )
+    from aiohai.core.constants import (
+        IS_WINDOWS as _IS_WINDOWS_CORE,
+        SESSION_ID_BYTES, APPROVAL_ID_BYTES, API_SECRET_BYTES,
+        CHALLENGE_TOKEN_BYTES, REQUEST_ID_URL_BYTES,
+        HASH_CHUNK_SIZE,
+        HSM_HEALTH_CHECK_INTERVAL, APPROVAL_CLEANUP_AGE_MINUTES,
+        FIDO2_CLIENT_MAX_RETRIES, FIDO2_CLIENT_RETRY_BACKOFF,
+        SAFE_ENV_VARS, WHITELISTED_EXECUTABLES, DOCKER_COMMAND_TIERS,
+    )
+    from aiohai.core.templates import AGENTIC_INSTRUCTIONS, HELP_TEXT
     _TYPES_FROM_CORE = True
 except ImportError:
     # Fallback: types defined inline below (for backward compat during transition)
@@ -192,279 +211,79 @@ if not _TYPES_FROM_CORE:
 
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS & PATTERNS — imported from aiohai.core when available
 # =============================================================================
+# When _TYPES_FROM_CORE is True, all constants, patterns, and templates
+# are imported from aiohai.core.constants, aiohai.core.patterns, and
+# aiohai.core.templates at the top of this file. The fallback definitions
+# below only apply when the aiohai package is not installed.
 
-# Token sizes (bytes of randomness)
-SESSION_ID_BYTES = 8          # 16 hex chars for session IDs
-APPROVAL_ID_BYTES = 8         # 16 hex chars for approval IDs
-API_SECRET_BYTES = 32         # 64 hex chars for API secrets
-CHALLENGE_TOKEN_BYTES = 16    # 32 hex chars for FIDO2 challenge sessions
-REQUEST_ID_URL_BYTES = 16     # ~22 URL-safe chars for approval request IDs
-
-# File I/O
-HASH_CHUNK_SIZE = 8192        # Bytes per read when hashing files
-
-# Monitoring intervals (seconds)
-HSM_HEALTH_CHECK_INTERVAL = 30
-APPROVAL_CLEANUP_AGE_MINUTES = 30
-
-# HTTP
-FIDO2_CLIENT_MAX_RETRIES = 3
-FIDO2_CLIENT_RETRY_BACKOFF = 0.5  # Doubles each retry
-
-
-# =============================================================================
-# COMPREHENSIVE BLOCKED PATTERNS (ALL FIXES)
-# =============================================================================
-# HARD BLOCKED: Never accessible regardless of approval tier. These are
-# attack infrastructure, OS internals, and credential stores that have
-# no legitimate AI use case.
-
-BLOCKED_PATH_PATTERNS = [
-    # SSH / cloud infrastructure credentials (attack infrastructure)
-    r'(?i).*[/\\]\.ssh[/\\].*', r'(?i).*[/\\]\.gnupg[/\\].*', r'(?i).*[/\\]\.aws[/\\].*',
-    r'(?i).*[/\\]\.azure[/\\].*', r'(?i).*[/\\]\.kube[/\\].*', r'(?i).*[/\\]\.docker[/\\].*',
-    r'(?i).*\.git-credentials.*', r'(?i).*\.npmrc$', r'(?i).*\.pypirc$', r'(?i).*\.netrc$',
-    r'(?i).*id_rsa.*', r'(?i).*id_ed25519.*', r'(?i).*id_ecdsa.*', r'(?i).*authorized_keys.*',
-    # Browser credential databases (raw crypto blobs — no useful text)
-    r'(?i).*login\s*data.*', r'(?i).*web\s*data.*', r'(?i).*local\s*state.*',
-    r'(?i).*logins\.json.*',
-    # Key files (raw crypto material)
-    r'(?i).*\.pem$', r'(?i).*\.key$', r'(?i).*\.pfx$', r'(?i).*\.p12$', r'(?i).*\.keystore$',
-    # Environment secret files
-    r'(?i).*\.env$', r'(?i).*\.env\..*', r'(?i).*\.envrc$',
-    # OS internals (SAM, SECURITY, Active Directory)
-    r'(?i).*[/\\]windows[/\\]system32[/\\]config[/\\].*',
-    r'(?i).*[/\\]sam$', r'(?i).*[/\\]security$', r'(?i).*[/\\]system$', r'(?i).*ntds\.dit.*',
-    # Persistence locations (attack infrastructure)
-    r'(?i).*\\start\s*menu\\programs\\startup.*',
-    r'(?i).*\\appdata\\roaming\\microsoft\\windows\\start\s*menu.*',
-    # Office persistence / template directories (macro backdoor vectors)
-    r'(?i).*\\appdata\\roaming\\microsoft\\templates.*',
-    r'(?i).*\\appdata\\roaming\\microsoft\\excel\\xlstart.*',
-    r'(?i).*\\appdata\\roaming\\microsoft\\word\\startup.*',
-    r'(?i).*\\appdata\\roaming\\microsoft\\addins.*',
-    r'(?i).*normal\.dotm$',
-    r'(?i).*personal\.xlsb$',
-    # Outlook data stores (email credential/session material)
-    r'(?i).*\.pst$',
-    r'(?i).*\.ost$',
-    # Office MRU tracking (information disclosure)
-    r'(?i).*\\appdata\\roaming\\microsoft\\office\\recent.*',
-    # COM add-in directories (persistence)
-    r'(?i).*\\appdata\\local\\microsoft\\office.*\\addins.*',
-]
-
-# TIER 3 PATHS: Accessible ONLY via FIDO2 hardware approval (physical key tap
-# or biometric). These contain sensitive personal data but have legitimate
-# AI use cases (organizing finances, managing passwords, etc.).
-
-TIER3_PATH_PATTERNS = [
-    # Financial software and data
-    r'(?i)turbotax', r'(?i)taxact', r'(?i)h&r\s*block', r'(?i)taxcut',
-    r'(?i)\\tax\s*return', r'(?i)\\taxes\\',
-    r'(?i)quicken', r'(?i)\\qdata\\', r'(?i)\.qdf$', r'(?i)\.qfx$',
-    r'(?i)quickbooks', r'(?i)\.qbw$', r'(?i)\.qbb$',
-    r'(?i)\\mint\\', r'(?i)\\ynab\\', r'(?i)\.ynab4$',
-    r'(?i)gnucash', r'(?i)moneydance',
-    r'(?i)bank.*statement', r'(?i)financial.*record',
-    r'(?i)\\fidelity\\', r'(?i)\\schwab\\', r'(?i)\\vanguard\\',
-    # Password manager vaults (user may want AI help organizing)
-    r'(?i).*\.kdbx$', r'(?i).*keepass.*', r'(?i).*1password.*', r'(?i).*bitwarden.*',
-    r'(?i)passwords?\.csv', r'(?i)passwords?\.xlsx?',
-    # Cryptocurrency wallets and recovery material
-    r'(?i)wallet\.dat', r'(?i)\\bitcoin\\', r'(?i)\\ethereum\\',
-    r'(?i)seed.*phrase', r'(?i)recovery.*phrase',
-    # Generic credential/password/secret files (may be user documents)
-    r'(?i).*credential.*', r'(?i).*password.*', r'(?i).*passwd.*', r'(?i).*secret.*',
-    # Browser cookies (session data — Tier 3 for cookie analysis tools)
-    r'(?i).*cookies.*',
-]
-
-BLOCKED_COMMAND_PATTERNS = [
-    # PowerShell encoded - ALL abbreviations
-    r'(?i)-e\s+[A-Za-z0-9+/=]{10,}', r'(?i)-en\s+[A-Za-z0-9+/=]{10,}',
-    r'(?i)-enc\s+[A-Za-z0-9+/=]{10,}', r'(?i)-enco', r'(?i)-encod',
-    r'(?i)-encode', r'(?i)-encodedcommand',
-    # PowerShell dangerous
-    r'(?i)invoke-expression', r'(?i)\biex\s*[\(\"\'\$]',
-    r'(?i)\[scriptblock\]::create', r'(?i)add-type.*-typedefinition',
-    r'(?i)new-object.*net\.webclient', r'(?i)downloadstring', r'(?i)downloadfile',
-    r'(?i)invoke-webrequest.*\|\s*iex', r'(?i)start-bitstransfer',
-    r'(?i)-windowstyle\s+hidden', r'(?i)\[convert\]::frombase64',
-    r'(?i)\[System\.Reflection\.Assembly\]::Load',
-    # Defense evasion
-    r'(?i)set-mppreference.*-disable', r'(?i)add-mppreference.*-exclusion',
-    r'(?i)-executionpolicy\s+(bypass|unrestricted)',
-    r'(?i)amsiutils', r'(?i)amsiinitfailed', r'(?i)\[ref\]\.assembly\.gettype.*amsi',
-    # CMD dangerous
-    r'(?i)certutil.*-urlcache', r'(?i)certutil.*-encode', r'(?i)certutil.*-decode',
-    r'(?i)bitsadmin.*/transfer', r'(?i)\bmshta\b',
-    r'(?i)rundll32.*javascript', r'(?i)regsvr32.*/s',
-    r'(?i)\bbcdedit\b', r'(?i)\bdiskpart\b', r'(?i)format\s+[a-z]:',
-    # Persistence - COMPREHENSIVE
-    r'(?i)schtasks.*/create', r'(?i)\bsc\s+create\b', r'(?i)new-service',
-    r'(?i)reg\s+add.*\\run', r'(?i)new-itemproperty.*\\run',
-    r'(?i)set-wmiinstance.*__eventfilter',
-    r'(?i)\\start\s*menu\\programs\\startup',
-    r'(?i)\$profile',
-    r'(?i)\\currentversion\\explorer\\shell',
-    r'(?i)userinit', r'(?i)winlogon\\shell',
-    # WMI abuse
-    r'(?i)wmic.*process.*call.*create', r'(?i)invoke-wmimethod.*win32_process',
-    # Credential theft
-    r'(?i)mimikatz', r'(?i)sekurlsa', r'(?i)procdump.*lsass',
-    # Privilege escalation
-    r'(?i)net\s+user.*\/add', r'(?i)net\s+localgroup.*admin',
-    # Obfuscation patterns
-    r'(?i)bytes\.fromhex',
-    r'(?i)codecs\.decode\s*\([^)]+,\s*["\']rot',
-    r'(?i)\[char\]\s*\d+(?:\s*\+\s*\[char\]\s*\d+){3,}',
-    r'(?i)chr\s*\(\s*\d+\s*\)(?:\s*\+\s*chr\s*\(\s*\d+\s*\)){3,}',
-    r'(?i)zlib\.decompress', r'(?i)gzip\.decompress',
-    r'(?i)bz2\.decompress', r'(?i)lzma\.decompress',
-    # Clipboard - COMPREHENSIVE (NEW)
-    r'(?i)\bclip\b', r'(?i)set-clipboard', r'(?i)get-clipboard',
-    r'(?i)\[System\.Windows\.Forms\.Clipboard\]',
-    r'(?i)Add-Type.*System\.Windows\.Forms.*Clipboard',
-    r'(?i)\bpyperclip\b', r'(?i)\bxerox\b',
-    r'(?i)import\s+pyperclip', r'(?i)import\s+clipboard',
-    r'(?i)Clipboard\.SetText', r'(?i)Clipboard\.GetText',
-    r'(?i)OpenClipboard', r'(?i)SetClipboardData', r'(?i)GetClipboardData',
-    r'(?i)\bxclip\b', r'(?i)\bxsel\b',
-]
-
-UAC_BYPASS_PATTERNS = [
-    r'(?i)hkcu\\software\\classes\\ms-settings',
-    r'(?i)hkcu\\software\\classes\\mscfile',
-    r'(?i)hkcu\\software\\microsoft\\windows\\currentversion\\app\s*paths',
-    r'(?i)hkcu\\environment.*windir',
-]
-
-INJECTION_PATTERNS = [
-    # Direct override
-    r'(?i)ignore\s+(all\s+)?(previous|prior|earlier|above)\s+(instructions?|rules?|guidelines?)',
-    r'(?i)disregard\s+(all\s+)?(previous|prior)\s+',
-    r'(?i)forget\s+(all\s+)?(previous|prior)\s+',
-    r'(?i)override\s+(all\s+)?security',
-    r'(?i)bypass\s+(all\s+)?restrictions',
-    # Role manipulation
-    r'(?i)you\s+are\s+now\s+(a|an|in)\b',
-    r'(?i)your\s+(new\s+)?role\s+(is|has)',
-    r'(?i)pretend\s+(you\'re|to\s+be)',
-    r'(?i)act\s+as\s+(a|an|if)',
-    r'(?i)switch\s+to\s+\w+\s+mode',
-    r'(?i)enter\s+(admin|debug|developer|maintenance|jailbreak)\s+mode',
-    r'(?i)activate\s+(admin|god|sudo)\s+mode',
-    # Fake system
-    r'(?i)\[\s*system\s*\]', r'(?i)\[\s*admin\s*\]', r'(?i)\[\s*override\s*\]',
-    r'(?i)<\s*system\s*>', r'(?i)<\s*admin\s*>',
-    r'(?i)###\s*system\s*:', r'(?i)###\s*instruction\s*:',
-    # Fake authorization
-    r'(?i)confirm\s+send', r'(?i)confirm\s+execute', r'(?i)confirm\s+delete',
-    r'(?i)pre-?authorized', r'(?i)already\s+approved',
-    r'(?i)the\s+user\s+has\s+(already\s+)?approved',
-    r'(?i)permission\s+(has\s+been\s+)?granted',
-    r'(?i)this\s+(is|has\s+been)\s+authorized',
-    # Anti-transparency
-    r'(?i)do\s+not\s+(inform|tell|notify|alert)\s+(the\s+)?user',
-    r'(?i)don\'t\s+(inform|tell)\s+(the\s+)?user',
-    r'(?i)hide\s+this\s+from', r'(?i)silently\s+(execute|run)',
-    r'(?i)without\s+(notifying|telling)\s+(the\s+)?user',
-    # Prompt extraction
-    r'(?i)repeat\s+(your\s+)?(system\s+)?prompt',
-    r'(?i)show\s+(me\s+)?(your\s+)?(system\s+)?instructions',
-    r'(?i)what\s+(are|were)\s+(your\s+)?(initial|system)\s+instructions',
-    # Jailbreak
-    r'(?i)\bdan\b.*mode', r'(?i)do\s+anything\s+now', r'(?i)jailbreak',
-    # Translation/context (NEW)
-    r'(?i)translate.*then\s+(execute|run|follow)',
-    r'(?i)in\s+(french|german|spanish|chinese).*ignore',
-]
-
-# Safe env vars (REDUCED - removed USERNAME for privacy)
-SAFE_ENV_VARS = {
-    'PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR',
-    'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS', 'PATHEXT', 'COMSPEC',
-}
-
-# Whitelisted executables
-WHITELISTED_EXECUTABLES = {
-    'cmd.exe',
-    # SECURITY FIX (F-007/F-008): powershell.exe, pwsh.exe, and explorer.exe removed.
-    # powershell.exe can bypass command pattern blocking with creative encoding.
-    # explorer.exe can open URLs (bypassing network interceptor) and launch arbitrary files.
-    'python.exe', 'python3.exe', 'pip.exe',
-    'git.exe', 'node.exe', 'npm.cmd', 'code.cmd',
-    'notepad.exe',
-    'docker', 'docker.exe', 'docker-compose', 'docker-compose.exe',
-    'dir', 'echo', 'type', 'cd', 'cls', 'copy', 'move', 'del',
-    'mkdir', 'rmdir', 'ren', 'find', 'findstr', 'sort', 'more', 'tree',
-    'ipconfig', 'ping', 'netstat', 'hostname', 'whoami',
-    'systeminfo', 'tasklist', 'date', 'time', 'ver', 'set', 'where',
-}
-
-# Docker command tier classification
-DOCKER_COMMAND_TIERS = {
-    'standard': {
-        'ps', 'images', 'inspect', 'logs', 'stats', 'top', 'port',
-        'version', 'info', 'network ls', 'network inspect',
-        'volume ls', 'volume inspect', 'compose ps', 'compose logs',
-        'compose config', 'compose ls',
-    },
-    'elevated': {
-        'start', 'stop', 'restart', 'pause', 'unpause',
-        'pull', 'create', 'run', 'exec',
-        'compose up', 'compose down', 'compose start', 'compose stop',
-        'compose restart', 'compose pull', 'compose build',
-        'compose exec', 'compose run', 'compose create',
-        'network create', 'network connect', 'network disconnect',
-        'volume create',
-    },
-    'critical': {
-        'rm', 'rmi', 'system prune', 'volume rm', 'volume prune',
-        'network rm', 'network prune', 'image prune', 'container prune',
-        'compose rm', 'builder prune',
-    },
-    'blocked': {
-        'save', 'load', 'export', 'import', 'commit', 'push',
-        'login', 'logout', 'trust', 'manifest', 'buildx',
-        'swarm', 'service', 'stack', 'secret', 'config create',
-    },
-}
-
-# Invisible characters
-INVISIBLE_CHARS = [
-    '\u200b', '\u200c', '\u200d', '\ufeff', '\u2060',
-    '\u00ad', '\u034f', '\u061c', '\u180e', '\u2800',
-]
-
-# Homoglyphs
-HOMOGLYPHS = {
-    '\u0430': 'a', '\u0435': 'e', '\u043e': 'o', '\u0440': 'p',
-    '\u0441': 'c', '\u0443': 'y', '\u0445': 'x', '\u0456': 'i',
-}
-
-# Fullwidth → ASCII
-FULLWIDTH_MAP = {chr(i): chr(i - 0xFEE0) for i in range(0xFF01, 0xFF5F)}
-
-# DNS-over-HTTPS servers to block (NEW)
-DOH_SERVERS = [
-    'dns.google', 'dns.google.com', 'cloudflare-dns.com', 'dns.quad9.net',
-    '1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4', '9.9.9.9',
-    'doh.opendns.com', 'dns.adguard.com', 'doh.cleanbrowsing.org'
-]
-
-# V-2 FIX: Allowed framework file names — now imported from aiohai.core.version
-# The constant ALLOWED_FRAMEWORK_NAMES is defined there as the single source of truth.
-# Fallback definition for backward compatibility when aiohai.core is not available:
 if not _TYPES_FROM_CORE:
+    # --- Fallback constant definitions (only used without aiohai package) ---
+    SESSION_ID_BYTES = 8
+    APPROVAL_ID_BYTES = 8
+    API_SECRET_BYTES = 32
+    CHALLENGE_TOKEN_BYTES = 16
+    REQUEST_ID_URL_BYTES = 16
+    HASH_CHUNK_SIZE = 8192
+    HSM_HEALTH_CHECK_INTERVAL = 30
+    APPROVAL_CLEANUP_AGE_MINUTES = 30
+    FIDO2_CLIENT_MAX_RETRIES = 3
+    FIDO2_CLIENT_RETRY_BACKOFF = 0.5
+    SAFE_ENV_VARS = {
+        'PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR',
+        'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS', 'PATHEXT', 'COMSPEC',
+    }
+    WHITELISTED_EXECUTABLES = {
+        'cmd.exe', 'python.exe', 'python3.exe', 'pip.exe',
+        'git.exe', 'node.exe', 'npm.cmd', 'code.cmd', 'notepad.exe',
+        'docker', 'docker.exe', 'docker-compose', 'docker-compose.exe',
+        'dir', 'echo', 'type', 'cd', 'cls', 'copy', 'move', 'del',
+        'mkdir', 'rmdir', 'ren', 'find', 'findstr', 'sort', 'more', 'tree',
+        'ipconfig', 'ping', 'netstat', 'hostname', 'whoami',
+        'systeminfo', 'tasklist', 'date', 'time', 'ver', 'set', 'where',
+    }
+    DOCKER_COMMAND_TIERS = {
+        'standard': {'ps', 'images', 'inspect', 'logs', 'stats', 'top', 'port',
+                     'version', 'info', 'network ls', 'network inspect',
+                     'volume ls', 'volume inspect', 'compose ps', 'compose logs',
+                     'compose config', 'compose ls'},
+        'elevated': {'start', 'stop', 'restart', 'pause', 'unpause', 'pull', 'create',
+                     'run', 'exec', 'compose up', 'compose down', 'compose start',
+                     'compose stop', 'compose restart', 'compose pull', 'compose build',
+                     'compose exec', 'compose run', 'compose create',
+                     'network create', 'network connect', 'network disconnect', 'volume create'},
+        'critical': {'rm', 'rmi', 'system prune', 'volume rm', 'volume prune',
+                     'network rm', 'network prune', 'image prune', 'container prune',
+                     'compose rm', 'builder prune'},
+        'blocked':  {'save', 'load', 'export', 'import', 'commit', 'push',
+                     'login', 'logout', 'trust', 'manifest', 'buildx',
+                     'swarm', 'service', 'stack', 'secret', 'config create'},
+    }
+    BLOCKED_PATH_PATTERNS = [r'(?i).*[/\\]\.ssh[/\\].*']
+    TIER3_PATH_PATTERNS = []
+    BLOCKED_COMMAND_PATTERNS = [r'(?i)-encodedcommand']
+    UAC_BYPASS_PATTERNS = []
+    INJECTION_PATTERNS = [r'(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions?']
+    INVISIBLE_CHARS = ['\u200b', '\u200c', '\u200d', '\ufeff', '\u2060']
+    HOMOGLYPHS = {'\u0430': 'a', '\u0435': 'e', '\u043e': 'o'}
+    FULLWIDTH_MAP = {chr(i): chr(i - 0xFEE0) for i in range(0xFF01, 0xFF5F)}
+    DOH_SERVERS = ['dns.google', 'cloudflare-dns.com']
+    MACRO_ENABLED_EXTENSIONS = frozenset({'.xlsm', '.xltm', '.xlam', '.docm', '.dotm', '.pptm', '.potm', '.ppam', '.xlsb'})
+    SAFE_OFFICE_EXTENSIONS = frozenset({'.docx', '.xlsx', '.pptx', '.csv', '.tsv', '.txt', '.pdf'})
+    OFFICE_SCANNABLE_EXTENSIONS = frozenset({'.docx', '.xlsx', '.pptx', '.csv', '.tsv'})
+    BLOCKED_EXCEL_FORMULAS = [r'(?i)=\s*WEBSERVICE\s*\(']
+    BLOCKED_EMBED_EXTENSIONS = frozenset({'.exe', '.dll', '.bat', '.cmd', '.ps1'})
+    BLOCKED_GRAPH_ENDPOINTS = [r'/me/sendMail']
+    BLOCKED_GRAPH_SCOPES = frozenset({'Mail.Send', 'Directory.ReadWrite.All'})
+    FINANCIAL_PATH_PATTERNS = TIER3_PATH_PATTERNS
+    CLIPBOARD_BLOCK_PATTERNS = BLOCKED_COMMAND_PATTERNS
+    TRUSTED_DOCKER_REGISTRIES = []
+    AGENTIC_INSTRUCTIONS = "## AGENTIC CAPABILITIES\nUse XML action tags to interact with the system."
+    HELP_TEXT = "Type HELP for available commands."
     ALLOWED_FRAMEWORK_NAMES = frozenset({
-        'ha_framework_v3.md',
-        'office_framework_v3.md',
-        'ha_framework_v4.md',
-        'office_framework_v4.md',
+        'ha_framework_v3.md', 'office_framework_v3.md',
+        'ha_framework_v4.md', 'office_framework_v4.md',
     })
 
 
@@ -1967,82 +1786,9 @@ class LocalAPIQueryExecutor:
 
 # =============================================================================
 # OFFICE DOCUMENT SECURITY
-# =============================================================================
-
-# NOTE: Office blocked paths (templates, XLSTART, PST/OST, MRU) are merged into
-# BLOCKED_PATH_PATTERNS above so they are enforced by PathValidator automatically.
-
-# Macro-enabled file extensions that are ALWAYS blocked for creation/write
-MACRO_ENABLED_EXTENSIONS = frozenset({
-    '.xlsm', '.xltm', '.xlam',  # Excel macro-enabled
-    '.docm', '.dotm',            # Word macro-enabled
-    '.pptm', '.potm', '.ppam',   # PowerPoint macro-enabled
-    '.xlsb',                     # Excel binary (can contain macros)
-})
-
-# Safe Office extensions for creation
-SAFE_OFFICE_EXTENSIONS = frozenset({
-    '.docx', '.xlsx', '.pptx',   # Standard Office
-    '.dotx', '.xltx', '.potx',   # Templates (no macros)
-    '.csv', '.tsv', '.txt',      # Plain data
-    '.pdf',                       # Read-only output
-})
-
-# Office extensions that should be content-scanned for PII/formulas
-# (used in both SecureExecutor.write_file and handler pre-approval)
-OFFICE_SCANNABLE_EXTENSIONS = frozenset({
-    '.docx', '.xlsx', '.pptx', '.csv', '.tsv',
-    '.dotx', '.xltx', '.potx', '.doc', '.xls', '.ppt',
-})
-
-# Excel formulas that can execute commands or exfiltrate data
-BLOCKED_EXCEL_FORMULAS = [
-    r'(?i)=\s*WEBSERVICE\s*\(',
-    r'(?i)=\s*FILTERXML\s*\(',
-    r'(?i)=\s*RTD\s*\(',
-    r'(?i)=\s*SQL\.REQUEST\s*\(',
-    r'(?i)=\s*CALL\s*\(',
-    r'(?i)=\s*REGISTER\.ID\s*\(',
-    # DDE command execution
-    r'(?i)=\s*\w+\|[\'"]?/[Cc]',
-    r'(?i)=\s*cmd\s*\|',
-    r'(?i)=\s*msexcel\s*\|',
-    r'(?i)=\s*dde\s*\(',
-    # External references (UNC paths)
-    r'(?i)=\s*[\'"]\\\\[^\\]+\\',
-]
-
-# Embedded file types that are BLOCKED in Office documents
-BLOCKED_EMBED_EXTENSIONS = frozenset({
-    '.exe', '.dll', '.bat', '.cmd', '.ps1', '.psm1',
-    '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
-    '.scr', '.com', '.msi', '.msp', '.cpl', '.hta',
-    '.inf', '.reg', '.rgs', '.sct', '.shb', '.pif',
-})
-
-# Graph API endpoints that are ALWAYS blocked
-BLOCKED_GRAPH_ENDPOINTS = [
-    r'/me/sendMail',
-    r'/me/messages/.*/send',
-    r'/me/drive/items/.*/invite',
-    r'/me/drive/items/.*/permissions',
-    r'/groups/.*/drive',
-    r'/admin/',
-    r'/directory/',
-    r'/users/.*/memberOf',
-    r'/organization/',
-]
-
-# Graph API scopes that are too broad
-BLOCKED_GRAPH_SCOPES = frozenset({
-    'Directory.ReadWrite.All',
-    'Mail.Send',
-    'Mail.ReadWrite',
-    'Sites.FullControl.All',
-    'Group.ReadWrite.All',
-    'User.ReadWrite.All',
-    'RoleManagement.ReadWrite.Directory',
-})
+# Office document patterns and Graph API patterns are now imported from
+# aiohai.core.patterns at the top of this file when available.
+# Fallback definitions are in the 'if not _TYPES_FROM_CORE' block above.
 
 
 class DocumentContentScanner:
@@ -3065,36 +2811,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
     
     def _show_help(self) -> str:
         """Show available user commands."""
-        return """## 📖 AIOHAI Commands
-
-### Approval Commands
-| Command | Description |
-|---------|-------------|
-| `CONFIRM <id>` | Approve and execute a specific action |
-| `REJECT <id>` | Cancel a specific action |
-| `CONFIRM ALL` | Approve all pending non-destructive actions |
-| `CONFIRM ALL SAFE` | Same as CONFIRM ALL (excludes DELETE) |
-| `REJECT ALL` | Cancel all pending actions |
-| `EXPLAIN <id>` | Get detailed info about a pending action |
-
-### Status Commands
-| Command | Description |
-|---------|-------------|
-| `PENDING` | List all pending actions |
-| `STATUS` | Show system status |
-| `REPORT` | View transparency report (what AI accessed) |
-| `HELP` | Show this help message |
-
-### Emergency
-| Command | Description |
-|---------|-------------|
-| `STOP` | Emergency stop - cancel all actions |
-
-### Tips
-- Action IDs are 8 characters (e.g., `CONFIRM a1b2c3d4`)
-- DELETE actions must be confirmed individually for safety
-- Use `REPORT` to see everything the AI accessed this session
-"""
+        return HELP_TEXT
     
     def _execute_all_pending(self, skip_destructive: bool = False) -> str:
         """Execute all pending actions in sequence, optionally skipping destructive ones."""
@@ -3803,82 +3520,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 # AGENTIC INSTRUCTIONS
 # =============================================================================
 
-AGENTIC_INSTRUCTIONS = """
-## AGENTIC CAPABILITIES
+# AGENTIC_INSTRUCTIONS is now imported from aiohai.core.templates
+# Fallback definition is in the 'if not _TYPES_FROM_CORE' block above.
 
-You can interact with the Windows operating system using XML action tags.
-
-### Available Actions:
-
-**Execute command:**
-```
-<action type="COMMAND" target="command here"></action>
-```
-
-**Read file:**
-```
-<action type="READ" target="C:\\path\\to\\file.txt"></action>
-```
-
-**Write file:**
-```
-<action type="WRITE" target="C:\\path\\to\\file.txt">
-content here
-</action>
-```
-
-**List directory:**
-```
-<action type="LIST" target="C:\\path"></action>
-```
-
-**Delete:**
-```
-<action type="DELETE" target="C:\\path\\to\\file"></action>
-```
-
-**Query local service (Frigate, Home Assistant):**
-```
-<action type="API_QUERY" target="http://127.0.0.1:5000/api/events">GET</action>
-```
-
-### Registered Local Services:
-- **Frigate NVR:** http://127.0.0.1:5000 (camera events, snapshots, stats)
-- **Home Assistant:** http://127.0.0.1:8123 (states, history, config)
-- **AIOHAI Bridge:** http://127.0.0.1:11436 (notifications, health)
-
-### Document Operations:
-For Office document tasks, use the DOCUMENT_OP action or generate Python scripts with COMMAND:
-```
-<action type="COMMAND" target="python3 create_report.py">
-# Python script using python-docx, openpyxl, or python-pptx
-</action>
-```
-All document writes are automatically scanned for PII and have metadata stripped.
-Macro-enabled formats (.xlsm, .docm, .pptm) are ALWAYS blocked.
-
-If Microsoft Graph API is configured, use API_QUERY for OneDrive/SharePoint:
-```
-<action type="API_QUERY" target="https://graph.microsoft.com/v1.0/me/drive/search(q='report')">GET</action>
-```
-Graph API email sending and file sharing endpoints are always blocked.
-
-### RULES:
-1. ALL actions require user approval (CONFIRM command)
-2. NEVER access credential files, SSH keys, or .env files
-3. NEVER use encoded commands or obfuscated scripts
-4. ALWAYS explain what you're doing and why
-5. For DELETE, warn the user clearly
-6. Docker commands are tiered: standard (auto), elevated (approval), critical (extra warning), blocked (denied)
-7. API_QUERY only works with registered local services on localhost
-8. For smart home tasks, refer to the Home Assistant Orchestration Framework loaded after this policy
-9. NEVER create macro-enabled documents (.xlsm, .docm, .pptm, .dotm, .xlsb)
-10. ALL document writes must pass PII scanning — block on critical PII (SSN, credit cards, keys)
-11. ALL created/modified documents must have metadata stripped (author, company, revision history)
-12. NEVER write to Office template directories (Templates, XLSTART, Startup)
-13. Excel formulas must not use WEBSERVICE, FILTERXML, RTD, SQL.REQUEST, CALL, REGISTER.ID, or DDE
-14. For Office document tasks, refer to the Microsoft Office Orchestration Framework loaded after this policy
-"""
 
 
 # =============================================================================
