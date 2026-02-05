@@ -88,6 +88,11 @@ from aiohai.core.constants import (
 # Re-export templates
 from aiohai.core.templates import AGENTIC_INSTRUCTIONS, HELP_TEXT
 
+# Re-export Phase 1 extracted classes
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+
 __all__ = [
     # Version constants
     '__version__', 'POLICY_FILENAME', 'CONFIG_SCHEMA_VERSION', 'ALLOWED_FRAMEWORK_NAMES',
@@ -118,4 +123,6 @@ __all__ = [
     'SAFE_ENV_VARS', 'WHITELISTED_EXECUTABLES', 'DOCKER_COMMAND_TIERS',
     # Templates
     'AGENTIC_INSTRUCTIONS', 'HELP_TEXT',
+    # Phase 1 classes
+    'UnifiedConfig', 'SecurityLogger', 'AlertManager',
 ]

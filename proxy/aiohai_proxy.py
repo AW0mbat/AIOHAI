@@ -291,242 +291,253 @@ if not _TYPES_FROM_CORE:
 # CONFIGURATION
 # =============================================================================
 
-@dataclass
-class UnifiedConfig:
-    listen_host: str = "127.0.0.1"
-    listen_port: int = 11435
-    ollama_host: str = "127.0.0.1"
-    ollama_port: int = 11434
-    
-    base_dir: Path = field(default_factory=lambda: Path(os.environ.get('AIOHAI_HOME', r'C:\AIOHAI')))
-    policy_file: Path = None
-    policy_signature_file: Path = None  # NEW: HSM signature
-    log_dir: Path = None
-    secure_temp_dir: Path = None
-    
-    refuse_admin: bool = True
-    verify_dll_integrity: bool = True
-    inject_system_prompt: bool = True
-    scan_for_injection: bool = True
-    enforce_network_allowlist: bool = True
-    scan_file_content: bool = True
-    enable_dual_llm: bool = False
-    allow_degraded_security: bool = False  # If True, allow startup without security components
-    
-    # HSM Configuration
-    hsm_enabled: bool = True  # NEW: Enable Nitrokey HSM integration
-    hsm_required: bool = True  # NEW: If True, refuse to start without HSM
-    hsm_use_mock: bool = False  # NEW: Use mock HSM for testing (NO SECURITY)
-    hsm_pin: str = ""  # NEW: HSM PIN (if provided, auto-login; else prompt)
-    hsm_sign_logs: bool = True  # NEW: Sign all log entries with HSM
-    
-    # FIDO2/WebAuthn Configuration
-    fido2_enabled: bool = True     # Enable FIDO2 hardware approval
-    fido2_server_port: int = 8443  # Approval server HTTPS port
-    fido2_server_host: str = "0.0.0.0"  # Bind to all interfaces for phone access
-    fido2_config_path: str = ""    # Path to FIDO2 config/state file
-    fido2_auto_start_server: bool = True  # Start approval server with proxy
-    fido2_poll_timeout: int = 300  # Seconds to wait for hardware approval
-    fido2_poll_interval: float = 1.0  # Seconds between status checks
-    
-    command_timeout: int = 30
-    max_file_size_mb: int = 100
-    max_output_length: int = 50000
-    rate_limit_per_minute: int = 60
-    max_concurrent_actions: int = 5
-    approval_expiry_minutes: int = 5
-    
-    allowed_drives: Set[str] = field(default_factory=lambda: {'C:', 'D:', 'E:'})
-    whitelisted_executables: Set[str] = field(default_factory=lambda: WHITELISTED_EXECUTABLES.copy())
-    network_allowlist: List[str] = field(default_factory=lambda: [
-        'localhost', '127.0.0.1',
-        'github.com', 'api.github.com',
-        'pypi.org', 'files.pythonhosted.org',
-    ])
-    
-    max_dns_query_length: int = 100
-    max_dns_entropy: float = 4.5
-    enable_desktop_alerts: bool = True
-    
-    def __post_init__(self):
-        if self.policy_file is None:
-            self.policy_file = self.base_dir / "policy" / POLICY_FILENAME
-        if self.policy_signature_file is None:
-            self.policy_signature_file = self.base_dir / "policy" / "policy.sig"
-        if self.log_dir is None:
-            self.log_dir = self.base_dir / "logs"
-        if self.secure_temp_dir is None:
-            self.secure_temp_dir = self.base_dir / "temp"
-        if not self.fido2_config_path:
-            self.fido2_config_path = str(self.base_dir / "config" / "fido2_config.json")
+# Phase 1 extraction: UnifiedConfig now lives in aiohai.core.config
+# Import it here for backward compatibility
+try:
+    from aiohai.core.config import UnifiedConfig
+    _CONFIG_FROM_CORE = True
+except ImportError:
+    _CONFIG_FROM_CORE = False
+
+if not _CONFIG_FROM_CORE:
+    @dataclass
+    class UnifiedConfig:
+        listen_host: str = "127.0.0.1"
+        listen_port: int = 11435
+        ollama_host: str = "127.0.0.1"
+        ollama_port: int = 11434
+
+        base_dir: Path = field(default_factory=lambda: Path(os.environ.get('AIOHAI_HOME', r'C:\AIOHAI')))
+        policy_file: Path = None
+        policy_signature_file: Path = None
+        log_dir: Path = None
+        secure_temp_dir: Path = None
+
+        refuse_admin: bool = True
+        verify_dll_integrity: bool = True
+        inject_system_prompt: bool = True
+        scan_for_injection: bool = True
+        enforce_network_allowlist: bool = True
+        scan_file_content: bool = True
+        enable_dual_llm: bool = False
+        allow_degraded_security: bool = False
+
+        hsm_enabled: bool = True
+        hsm_required: bool = True
+        hsm_use_mock: bool = False
+        hsm_pin: str = ""
+        hsm_sign_logs: bool = True
+
+        fido2_enabled: bool = True
+        fido2_server_port: int = 8443
+        fido2_server_host: str = "0.0.0.0"
+        fido2_config_path: str = ""
+        fido2_auto_start_server: bool = True
+        fido2_poll_timeout: int = 300
+        fido2_poll_interval: float = 1.0
+
+        command_timeout: int = 30
+        max_file_size_mb: int = 100
+        max_output_length: int = 50000
+        rate_limit_per_minute: int = 60
+        max_concurrent_actions: int = 5
+        approval_expiry_minutes: int = 5
+
+        allowed_drives: Set[str] = field(default_factory=lambda: {'C:', 'D:', 'E:'})
+        whitelisted_executables: Set[str] = field(default_factory=lambda: WHITELISTED_EXECUTABLES.copy())
+        network_allowlist: List[str] = field(default_factory=lambda: [
+            'localhost', '127.0.0.1',
+            'github.com', 'api.github.com',
+            'pypi.org', 'files.pythonhosted.org',
+        ])
+
+        max_dns_query_length: int = 100
+        max_dns_entropy: float = 4.5
+        enable_desktop_alerts: bool = True
+
+        def __post_init__(self):
+            if self.policy_file is None:
+                self.policy_file = self.base_dir / "policy" / POLICY_FILENAME
+            if self.policy_signature_file is None:
+                self.policy_signature_file = self.base_dir / "policy" / "policy.sig"
+            if self.log_dir is None:
+                self.log_dir = self.base_dir / "logs"
+            if self.secure_temp_dir is None:
+                self.secure_temp_dir = self.base_dir / "temp"
+            if not self.fido2_config_path:
+                self.fido2_config_path = str(self.base_dir / "config" / "fido2_config.json")
 
 
 # =============================================================================
 # LOGGING WITH PII PROTECTION
 # =============================================================================
 
-class SecurityLogger:
-    """Tamper-evident logging with PII redaction and optional HSM signing."""
-    
-    def __init__(self, config: UnifiedConfig, hsm_manager=None):
-        self.config = config
-        self.log_dir = config.log_dir
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.main_log = self.log_dir / "security_events.log"
-        self.action_log = self.log_dir / "actions.log"
-        self.blocked_log = self.log_dir / "blocked.log"
-        self.network_log = self.log_dir / "network.log"
-        self.hsm_signed_log = self.log_dir / "hsm_signed.log"  # NEW: HSM-signed entries
-        
-        # HSM integration for log signing
-        self.hsm_manager = hsm_manager
-        self.hsm_sign_logs = config.hsm_sign_logs and hsm_manager is not None
-        
-        self.session_id = self._generate_session_id()
-        self.entry_counter = 0
-        self.previous_hash = "0" * 64
-        self.stats = defaultdict(int)
-        
-        # PII protector for log sanitization
-        if SECURITY_COMPONENTS_AVAILABLE:
-            self.pii_protector = PIIProtector()
-        else:
-            self.pii_protector = None
-        
-        logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
-        self.logger = logging.getLogger('AIOHAI')
-    
-    def _generate_session_id(self) -> str:
-        """Generate session ID using HSM if available, else software."""
-        if self.hsm_manager and self.hsm_manager.is_connected():
-            return self.hsm_manager.generate_token(SESSION_ID_BYTES)
-        return secrets.token_hex(SESSION_ID_BYTES)
-    
-    def set_hsm_manager(self, hsm_manager) -> None:
-        """Set HSM manager after initialization (for late binding)."""
-        self.hsm_manager = hsm_manager
-        self.hsm_sign_logs = self.config.hsm_sign_logs and hsm_manager is not None
-        # Regenerate session ID with HSM
-        if self.hsm_manager and self.hsm_manager.is_connected():
-            self.session_id = self.hsm_manager.generate_token(8)
-    
-    def _sanitize(self, text: str) -> str:
-        """Sanitize text for logging (remove PII)."""
-        if self.pii_protector:
-            return self.pii_protector.redact_for_logging(text)
-        return text
-    
-    def _chain_hash(self, entry: str) -> str:
-        return hashlib.sha256(f"{self.previous_hash}:{entry}".encode()).hexdigest()
-    
-    def _write(self, log_file: Path, entry: Dict):
-        self.entry_counter += 1
-        entry.update({
-            'timestamp': datetime.now().isoformat(),
-            'session_id': self.session_id,
-            'sequence': self.entry_counter
-        })
-        entry_str = json.dumps(entry, sort_keys=True)
-        entry['chain_hash'] = self._chain_hash(entry_str)
-        self.previous_hash = entry['chain_hash']
-        
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry) + '\n')
-        
-        # Also create HSM-signed entry for critical logs
-        if self.hsm_sign_logs and entry.get('severity') in ('HIGH', 'CRITICAL'):
-            self._write_hsm_signed(entry)
-    
-    def _write_hsm_signed(self, entry: Dict):
-        """Write an HSM-signed log entry for tamper evidence."""
-        if not self.hsm_manager or not self.hsm_manager.is_connected():
-            return
-        
-        try:
-            signed_entry = self.hsm_manager.sign_log_entry(entry)
-            if signed_entry:
-                with open(self.hsm_signed_log, 'a', encoding='utf-8') as f:
-                    signed_data = {
-                        'timestamp': signed_entry.timestamp,
-                        'event_type': signed_entry.event_type,
-                        'data': signed_entry.data,
-                        'entry_hash': signed_entry.entry_hash,
-                        'signature': signed_entry.signature,
-                        'previous_hash': signed_entry.previous_hash,
-                    }
-                    f.write(json.dumps(signed_data) + '\n')
-        except Exception as e:
-            self.logger.warning(f"HSM log signing failed: {e}")
-    
-    def log_event(self, event: str, severity: AlertSeverity, details: Dict = None) -> None:
-        # Sanitize details
-        if details:
-            details = {k: self._sanitize(str(v)) if isinstance(v, str) else v 
-                      for k, v in details.items()}
-        
-        self._write(self.main_log, {'event': event, 'severity': severity.value, 'details': details or {}})
-        self.stats[f'{severity.value}_{event}'] += 1
-        
-        if severity in (AlertSeverity.HIGH, AlertSeverity.CRITICAL):
-            self.logger.warning(f"[{severity.value.upper()}] {event}")
-    
-    def log_action(self, action: str, target: str, result: str, details: Dict = None) -> None:
-        target = self._sanitize(target[:200])
-        result = self._sanitize(result[:500]) if result else ""
-        self._write(self.action_log, {'action': action, 'target': target, 'result': result, 
-                                       'details': details or {}})
-        self.logger.info(f"ACTION: {action} | {result}")
-    
-    def log_blocked(self, action: str, target: str, reason: str) -> None:
-        target = self._sanitize(target[:200])
-        self._write(self.blocked_log, {'action': action, 'target': target, 'reason': reason})
-        self.stats['blocked'] += 1
-        self.logger.warning(f"BLOCKED: {action} | {reason}")
-    
-    def log_network(self, destination: str, action: str, details: Dict = None) -> None:
-        self._write(self.network_log, {'destination': destination, 'action': action, 
-                                        'details': details or {}})
+# Phase 1 extraction: SecurityLogger now lives in aiohai.core.audit.logger
+try:
+    from aiohai.core.audit.logger import SecurityLogger
+    _LOGGER_FROM_CORE = True
+except ImportError:
+    _LOGGER_FROM_CORE = False
+
+if not _LOGGER_FROM_CORE:
+    class SecurityLogger:
+        """Tamper-evident logging with PII redaction and optional HSM signing."""
+
+        def __init__(self, config: UnifiedConfig, hsm_manager=None):
+            self.config = config
+            self.log_dir = config.log_dir
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+
+            self.main_log = self.log_dir / "security_events.log"
+            self.action_log = self.log_dir / "actions.log"
+            self.blocked_log = self.log_dir / "blocked.log"
+            self.network_log = self.log_dir / "network.log"
+            self.hsm_signed_log = self.log_dir / "hsm_signed.log"
+
+            self.hsm_manager = hsm_manager
+            self.hsm_sign_logs = config.hsm_sign_logs and hsm_manager is not None
+
+            self.session_id = self._generate_session_id()
+            self.entry_counter = 0
+            self.previous_hash = "0" * 64
+            self.stats = defaultdict(int)
+
+            if SECURITY_COMPONENTS_AVAILABLE:
+                self.pii_protector = PIIProtector()
+            else:
+                self.pii_protector = None
+
+            logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
+            self.logger = logging.getLogger('AIOHAI')
+
+        def _generate_session_id(self) -> str:
+            if self.hsm_manager and self.hsm_manager.is_connected():
+                return self.hsm_manager.generate_token(SESSION_ID_BYTES)
+            return secrets.token_hex(SESSION_ID_BYTES)
+
+        def set_hsm_manager(self, hsm_manager) -> None:
+            self.hsm_manager = hsm_manager
+            self.hsm_sign_logs = self.config.hsm_sign_logs and hsm_manager is not None
+            if self.hsm_manager and self.hsm_manager.is_connected():
+                self.session_id = self.hsm_manager.generate_token(8)
+
+        def _sanitize(self, text: str) -> str:
+            if self.pii_protector:
+                return self.pii_protector.redact_for_logging(text)
+            return text
+
+        def _chain_hash(self, entry: str) -> str:
+            return hashlib.sha256(f"{self.previous_hash}:{entry}".encode()).hexdigest()
+
+        def _write(self, log_file: Path, entry: Dict):
+            self.entry_counter += 1
+            entry.update({
+                'timestamp': datetime.now().isoformat(),
+                'session_id': self.session_id,
+                'sequence': self.entry_counter
+            })
+            entry_str = json.dumps(entry, sort_keys=True)
+            entry['chain_hash'] = self._chain_hash(entry_str)
+            self.previous_hash = entry['chain_hash']
+
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry) + '\n')
+
+            if self.hsm_sign_logs and entry.get('severity') in ('HIGH', 'CRITICAL'):
+                self._write_hsm_signed(entry)
+
+        def _write_hsm_signed(self, entry: Dict):
+            if not self.hsm_manager or not self.hsm_manager.is_connected():
+                return
+            try:
+                signed_entry = self.hsm_manager.sign_log_entry(entry)
+                if signed_entry:
+                    with open(self.hsm_signed_log, 'a', encoding='utf-8') as f:
+                        signed_data = {
+                            'timestamp': signed_entry.timestamp,
+                            'event_type': signed_entry.event_type,
+                            'data': signed_entry.data,
+                            'entry_hash': signed_entry.entry_hash,
+                            'signature': signed_entry.signature,
+                            'previous_hash': signed_entry.previous_hash,
+                        }
+                        f.write(json.dumps(signed_data) + '\n')
+            except Exception as e:
+                self.logger.warning(f"HSM log signing failed: {e}")
+
+        def log_event(self, event: str, severity: AlertSeverity, details: Dict = None) -> None:
+            if details:
+                details = {k: self._sanitize(str(v)) if isinstance(v, str) else v
+                          for k, v in details.items()}
+            self._write(self.main_log, {'event': event, 'severity': severity.value, 'details': details or {}})
+            self.stats[f'{severity.value}_{event}'] += 1
+            if severity in (AlertSeverity.HIGH, AlertSeverity.CRITICAL):
+                self.logger.warning(f"[{severity.value.upper()}] {event}")
+
+        def log_action(self, action: str, target: str, result: str, details: Dict = None) -> None:
+            target = self._sanitize(target[:200])
+            result = self._sanitize(result[:500]) if result else ""
+            self._write(self.action_log, {'action': action, 'target': target, 'result': result,
+                                           'details': details or {}})
+            self.logger.info(f"ACTION: {action} | {result}")
+
+        def log_blocked(self, action: str, target: str, reason: str) -> None:
+            target = self._sanitize(target[:200])
+            self._write(self.blocked_log, {'action': action, 'target': target, 'reason': reason})
+            self.stats['blocked'] += 1
+            self.logger.warning(f"BLOCKED: {action} | {reason}")
+
+        def log_network(self, destination: str, action: str, details: Dict = None) -> None:
+            self._write(self.network_log, {'destination': destination, 'action': action,
+                                            'details': details or {}})
 
 
 # =============================================================================
 # ALERT MANAGER
 # =============================================================================
 
-class AlertManager:
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger):
-        self.config = config
-        self.logger = logger
-        self.alert_queue = queue.Queue()
-        self.running = True
-        self.thread = threading.Thread(target=self._process, daemon=True)
-        self.thread.start()
-    
-    def alert(self, severity: AlertSeverity, title: str, message: str, details: Dict = None) -> None:
-        self.alert_queue.put({'severity': severity, 'title': title, 'message': message})
-        self.logger.log_event(title, severity, {'message': message, **(details or {})})
-    
-    def _process(self):
-        while self.running:
-            try:
-                alert = self.alert_queue.get(timeout=1)
-                self._deliver(alert)
-            except queue.Empty:
-                continue
-    
-    def _deliver(self, alert: Dict):
-        severity = alert['severity']
-        colors = {AlertSeverity.INFO: '\033[94m', AlertSeverity.WARNING: '\033[93m',
-                  AlertSeverity.HIGH: '\033[91m', AlertSeverity.CRITICAL: '\033[95m'}
-        reset = '\033[0m'
-        print(f"{colors.get(severity, '')}{severity.value.upper()}: {alert['title']}{reset}")
-        
-        if self.config.enable_desktop_alerts and IS_WINDOWS and severity == AlertSeverity.CRITICAL:
-            try:
-                ctypes.windll.user32.MessageBoxW(0, alert['message'][:500], 
-                                                 f"AIOHAI: {alert['title']}", 0x10)
-            except Exception:
-                pass  # Desktop alert is best-effort
+# Phase 1 extraction: AlertManager now lives in aiohai.core.audit.alerts
+try:
+    from aiohai.core.audit.alerts import AlertManager
+    _ALERTS_FROM_CORE = True
+except ImportError:
+    _ALERTS_FROM_CORE = False
+
+if not _ALERTS_FROM_CORE:
+    class AlertManager:
+        def __init__(self, config: UnifiedConfig, logger: SecurityLogger):
+            self.config = config
+            self.logger = logger
+            self.alert_queue = queue.Queue()
+            self.running = True
+            self.thread = threading.Thread(target=self._process, daemon=True)
+            self.thread.start()
+
+        def alert(self, severity: AlertSeverity, title: str, message: str, details: Dict = None) -> None:
+            self.alert_queue.put({'severity': severity, 'title': title, 'message': message})
+            self.logger.log_event(title, severity, {'message': message, **(details or {})})
+
+        def _process(self):
+            while self.running:
+                try:
+                    alert = self.alert_queue.get(timeout=1)
+                    self._deliver(alert)
+                except queue.Empty:
+                    continue
+
+        def _deliver(self, alert: Dict):
+            severity = alert['severity']
+            colors = {AlertSeverity.INFO: '\033[94m', AlertSeverity.WARNING: '\033[93m',
+                      AlertSeverity.HIGH: '\033[91m', AlertSeverity.CRITICAL: '\033[95m'}
+            reset = '\033[0m'
+            print(f"{colors.get(severity, '')}{severity.value.upper()}: {alert['title']}{reset}")
+
+            if self.config.enable_desktop_alerts and IS_WINDOWS and severity == AlertSeverity.CRITICAL:
+                try:
+                    ctypes.windll.user32.MessageBoxW(0, alert['message'][:500],
+                                                     f"AIOHAI: {alert['title']}", 0x10)
+                except Exception:
+                    pass
 
 
 # =============================================================================
