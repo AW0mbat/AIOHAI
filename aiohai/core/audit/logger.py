@@ -52,7 +52,7 @@ class SecurityLogger:
         # PII protector for log sanitization — lazy import to avoid circular deps
         self.pii_protector = None
         try:
-            from security.security_components import PIIProtector
+            from aiohai.core.analysis.pii_protector import PIIProtector
             self.pii_protector = PIIProtector()
         except ImportError:
             pass

@@ -20,7 +20,7 @@ def main():
     
     # For now, import and run from the original location
     # This ensures the existing code continues to work during transition
-    from proxy.aiohai_proxy import main as proxy_main
+    from aiohai.proxy.orchestrator import main as proxy_main
     return proxy_main()
 
 

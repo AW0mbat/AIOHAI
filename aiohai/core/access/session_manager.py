@@ -21,9 +21,9 @@ import logging
 
 logger = logging.getLogger("aiohai.core.access.session")
 
-# Import the implementation from proxy
+# Import the implementation from the extracted proxy layer
 try:
-    from proxy.aiohai_proxy import ApprovalManager
+    from aiohai.proxy.approval import ApprovalManager
     # Alias for the new name
     SessionManager = ApprovalManager
     _SESSION_IMPL_AVAILABLE = True
