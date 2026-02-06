@@ -2264,3 +2264,11 @@ try:
     from aiohai.integrations.office.audit_logger import DocumentAuditLogger
 except ImportError:
     pass  # Keep fallback class definitions from above
+
+# =============================================================================
+# PHASE 5: Override DualLLMVerifier with extracted proxy version
+# =============================================================================
+try:
+    from aiohai.proxy.dual_llm import DualLLMVerifier
+except ImportError:
+    pass  # Keep fallback class definition from above

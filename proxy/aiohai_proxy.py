@@ -4189,6 +4189,20 @@ try:
 except ImportError:
     pass  # Keep fallback class definitions from above
 
+# =============================================================================
+# PHASE 5: Override proxy layer class definitions with extracted versions
+# =============================================================================
+try:
+    from aiohai.proxy.action_parser import ActionParser
+    from aiohai.proxy.circuit_breaker import OllamaCircuitBreaker
+    from aiohai.proxy.approval import ApprovalManager
+    from aiohai.proxy.executor import SecureExecutor
+    from aiohai.proxy.handler import UnifiedProxyHandler
+    from aiohai.proxy.server import ThreadedHTTPServer
+    from aiohai.proxy.orchestrator import UnifiedSecureProxy
+except ImportError:
+    pass  # Keep fallback class definitions from above
+
 
 if __name__ == '__main__':
     main()
