@@ -27,7 +27,6 @@ from aiohai.core.access.command_validator import (
 )
 
 from aiohai.core.access.session_manager import (
-    ApprovalManager,
     SessionManager,
 )
 
@@ -45,6 +44,5 @@ __all__ = [
     'DOCKER_COMMAND_TIERS',
     
     # Session management
-    'ApprovalManager',
     'SessionManager',
 ]

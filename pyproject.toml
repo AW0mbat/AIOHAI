@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiohai"
+version = "5.0.0"
+description = "AI-Operated Home & Office Intelligence Proxy — Security middleware for local LLM deployments"
+readme = "README.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Troy"},
+]
+
+# Core dependencies — proxy runs with just these
+dependencies = [
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+# Hardware security: FIDO2 key approval
+fido2 = [
+    "fido2>=1.1.0",
+    "flask>=3.0.0",
+    "flask-cors>=4.0.0",
+    "cryptography>=42.0.0",
+]
+
+# Hardware security: Nitrokey HSM log signing
+hsm = [
+    "PyKCS11>=1.5.12",
+]
+
+# Office document scanning & metadata sanitization
+office = [
+    "python-docx>=0.8.11",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.21",
+]
+
+# All optional hardware + office integrations
+all = [
+    "aiohai[fido2,hsm,office]",
+]
+
+# Development & testing
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+aiohai = "aiohai.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["aiohai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

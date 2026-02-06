@@ -827,16 +827,11 @@ def _get_register_html():
 def _get_error_html():
     return _ERROR_HTML
 
-# Templates loaded from companion file or inline
-try:
-    _templates_path = Path(__file__).parent / 'fido2_templates.py'
-    if _templates_path.exists():
-        exec(_templates_path.read_text(encoding='utf-8'))
-    else:
-        raise FileNotFoundError
-except Exception:
-    # Inline fallback templates
-    _DASHBOARD_HTML = r"""<!DOCTYPE html><html><head>
+# =============================================================================
+# HTML Templates (inline — no external file loading for security)
+# =============================================================================
+
+_DASHBOARD_HTML = r"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ rp_name }} Approvals</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui;background:#0a0a0f;color:#e8e8f0;min-height:100vh;padding:1rem}
@@ -883,7 +878,7 @@ await fetch('/auth/reject',{method:'POST',headers:{'Content-Type':'application/j
 poll();setInterval(poll,2000);
 </script></body></html>"""
 
-    _APPROVAL_HTML = r"""<!DOCTYPE html><html><head>
+_APPROVAL_HTML = r"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Approve — {{ rp_name }}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui;background:#0a0a0f;color:#e8e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
@@ -923,7 +918,7 @@ await fetch('/auth/reject',{method:'POST',headers:{'Content-Type':'application/j
 document.getElementById('card').innerHTML='<div class="done no"><div class="icon">❌</div><div class="title">Rejected</div><p style="margin-top:1rem;color:#888">You can close this page.</p></div>'}
 </script></body></html>"""
 
-    _REGISTER_HTML = r"""<!DOCTYPE html><html><head>
+_REGISTER_HTML = r"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Register — {{ rp_name }}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui;background:#0a0a0f;color:#e8e8f0;min-height:100vh;padding:1.5rem}
@@ -972,7 +967,7 @@ l.innerHTML=h||'<p style="color:#888;font-size:.85rem;text-align:center">No devi
 loadDevs();
 </script></body></html>"""
 
-    _ERROR_HTML = r"""<!DOCTYPE html><html><head>
+_ERROR_HTML = r"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Error</title>
 <style>body{font-family:system-ui;background:#0a0a0f;color:#e8e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}

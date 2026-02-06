@@ -3,14 +3,6 @@ AIOHAI Core Types — Shared enums, dataclasses, and exceptions.
 
 This module centralizes all type definitions used across the AIOHAI codebase.
 All layers (Core, Integrations, Proxy, Agent) import types from here.
-
-Migration Notes:
-- Types previously in proxy/aiohai_proxy.py are now here
-- Types previously in security/security_components.py are now here
-- Types previously in security/fido2_approval.py are now here
-- Types previously in security/hsm_integration.py are now here
-
-Backward compatibility facades in the original locations re-export these types.
 """
 
 from __future__ import annotations

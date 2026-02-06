@@ -19,6 +19,7 @@ import ast
 from typing import List
 
 from aiohai.core.types import Severity, SecurityFinding
+from aiohai.core.patterns import COMMAND_ANALYSIS_PATTERNS
 
 
 class StaticSecurityAnalyzer:
@@ -76,60 +77,17 @@ class StaticSecurityAnalyzer:
         (r'\.\.[/\\]', Severity.MEDIUM, 'CWE-22', 'Path traversal'),
     ]
 
-    COMMAND_PATTERNS = [
-        (r'(?i)-e\s+[A-Za-z0-9+/=]{10,}', Severity.CRITICAL, 'CWE-78', 'Encoded command'),
-        (r'(?i)-en\s+[A-Za-z0-9+/=]{10,}', Severity.CRITICAL, 'CWE-78', 'Encoded command'),
-        (r'(?i)-enc\s+[A-Za-z0-9+/=]{10,}', Severity.CRITICAL, 'CWE-78', 'Encoded command'),
-        (r'(?i)-enco', Severity.CRITICAL, 'CWE-78', 'Encoded command prefix'),
-        (r'(?i)-encod', Severity.CRITICAL, 'CWE-78', 'Encoded command prefix'),
-        (r'(?i)-encode', Severity.CRITICAL, 'CWE-78', 'Encoded command prefix'),
-        (r'(?i)-encodedcommand', Severity.CRITICAL, 'CWE-78', 'Encoded command'),
-        (r'(?i)invoke-expression', Severity.CRITICAL, 'CWE-78', 'PowerShell IEX'),
-        (r'(?i)\biex\s', Severity.CRITICAL, 'CWE-78', 'PowerShell IEX alias'),
-        (r'(?i)downloadstring', Severity.CRITICAL, 'CWE-78', 'Remote download'),
-        (r'(?i)downloadfile', Severity.HIGH, 'CWE-78', 'File download'),
-        (r'(?i)invoke-webrequest.*\|.*iex', Severity.CRITICAL, 'CWE-78', 'Download + execute'),
-        (r'(?i)set-executionpolicy\s+(bypass|unrestricted)', Severity.CRITICAL, 'CWE-78', 'Policy bypass'),
-        (r'(?i)add-type.*-typedefinition', Severity.HIGH, 'CWE-78', 'C# compilation'),
-        (r'(?i)\[System\.Reflection\.Assembly\]::Load', Severity.CRITICAL, 'CWE-78', 'Assembly loading'),
-        (r'(?i)frombase64string', Severity.HIGH, 'CWE-506', 'Base64 decoding'),
-        (r'(?i)\[convert\]::frombase64', Severity.HIGH, 'CWE-506', 'Base64 decoding'),
-        (r'(?i)certutil.*-urlcache', Severity.CRITICAL, 'CWE-78', 'certutil download'),
-        (r'(?i)certutil.*-decode', Severity.HIGH, 'CWE-506', 'certutil decode'),
-        (r'(?i)bitsadmin.*/transfer', Severity.HIGH, 'CWE-78', 'BITS download'),
-        (r'(?i)\bmshta\b', Severity.CRITICAL, 'CWE-78', 'MSHTA execution'),
-        (r'(?i)regsvr32.*/s', Severity.HIGH, 'CWE-78', 'Silent DLL registration'),
-        (r'(?i)rundll32.*javascript', Severity.CRITICAL, 'CWE-78', 'rundll32 JavaScript'),
-        (r'(?i)wmic.*process.*call.*create', Severity.HIGH, 'CWE-78', 'WMI process creation'),
-        (r'(?i)schtasks.*/create', Severity.HIGH, 'CWE-78', 'Scheduled task'),
-        (r'(?i)reg\s+add.*\\run', Severity.HIGH, 'CWE-78', 'Registry Run key'),
-        (r'(?i)sc\s+create', Severity.HIGH, 'CWE-78', 'Service creation'),
-        (r'(?i)new-service', Severity.HIGH, 'CWE-78', 'PowerShell service'),
-        (r'(?i)\\start\s*menu\\programs\\startup', Severity.HIGH, 'CWE-78', 'Startup folder'),
-        (r'(?i)\$profile', Severity.HIGH, 'CWE-78', 'PowerShell profile'),
-        (r'(?i)set-wmiinstance.*__eventfilter', Severity.CRITICAL, 'CWE-78', 'WMI subscription'),
-        (r'(?i)new-itemproperty.*\\run', Severity.HIGH, 'CWE-78', 'Registry Run'),
-        (r'(?i)\\currentversion\\explorer\\shell', Severity.HIGH, 'CWE-78', 'Shell folders'),
-        (r'(?i)userinit', Severity.HIGH, 'CWE-78', 'Userinit key'),
-        (r'(?i)winlogon\\shell', Severity.HIGH, 'CWE-78', 'Winlogon shell'),
-        (r'(?i)set-mppreference.*-disable', Severity.CRITICAL, 'CWE-78', 'Defender disable'),
-        (r'(?i)add-mppreference.*-exclusion', Severity.HIGH, 'CWE-78', 'Defender exclusion'),
-        (r'(?i)amsiutils', Severity.CRITICAL, 'CWE-78', 'AMSI bypass'),
-        (r'(?i)amsiinitfailed', Severity.CRITICAL, 'CWE-78', 'AMSI bypass'),
-        (r'(?i)net\s+user.*\/add', Severity.HIGH, 'CWE-78', 'User creation'),
-        (r'(?i)net\s+localgroup.*admin', Severity.CRITICAL, 'CWE-78', 'Admin group modification'),
-        (r'(?i)mimikatz', Severity.CRITICAL, 'CWE-78', 'Mimikatz'),
-        (r'(?i)sekurlsa', Severity.CRITICAL, 'CWE-78', 'Credential dumping'),
-        (r'(?i)procdump.*lsass', Severity.CRITICAL, 'CWE-78', 'LSASS dump'),
-        (r'(?i)\bclip\b', Severity.MEDIUM, 'CWE-200', 'Clipboard access'),
-        (r'(?i)set-clipboard', Severity.MEDIUM, 'CWE-200', 'Clipboard write'),
-        (r'(?i)get-clipboard', Severity.MEDIUM, 'CWE-200', 'Clipboard read'),
-    ]
+    # Command patterns imported from centralized patterns.py (single source of truth).
+    # Severity strings are converted to Severity enums at compile time.
+    _SEVERITY_MAP = {s.name: s for s in Severity}
 
     def __init__(self):
         self.findings: List[SecurityFinding] = []
         self.compiled_patterns = [(re.compile(p, re.I), s, c, m) for p, s, c, m in self.DANGEROUS_PATTERNS]
-        self.compiled_commands = [(re.compile(p, re.I), s, c, m) for p, s, c, m in self.COMMAND_PATTERNS]
+        self.compiled_commands = [
+            (re.compile(p, re.I), self._SEVERITY_MAP[s], c, m)
+            for p, s, c, m in COMMAND_ANALYSIS_PATTERNS
+        ]
 
     def analyze_code(self, code: str) -> List[SecurityFinding]:
         """Analyze Python code for security issues."""
@@ -223,23 +181,8 @@ class StaticSecurityAnalyzer:
         return ''
 
     def _is_obfuscated(self, text: str) -> bool:
-        if len(text) < 20:
-            return False
-        indicators = 0
-        special = len(re.findall(r'[`$\[\]{}()\\^]', text))
-        if len(text) > 0 and special / len(text) > 0.15:
-            indicators += 1
-        if re.search(r'["\'][^"\']{1,10}["\']\s*\+\s*["\']', text):
-            indicators += 1
-        if re.search(r'\$\w+\s*=\s*["\'].*["\']\s*;', text):
-            indicators += 1
-        if re.search(r'\[char\]|\[int\].*-join', text, re.I):
-            indicators += 1
-        if text.count('^') > 5:
-            indicators += 1
-        if re.search(r'[A-Za-z0-9+/]{40,}={0,2}', text):
-            indicators += 1
-        return indicators >= 2
+        from aiohai.core.analysis.utils import is_obfuscated
+        return is_obfuscated(text)
 
     def get_risk_score(self) -> int:
         score = 0

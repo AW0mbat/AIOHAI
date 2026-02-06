@@ -127,25 +127,8 @@ class CommandValidator:
         return 'elevated'  # Unknown commands default to elevated
 
     def _is_obfuscated(self, cmd: str) -> bool:
-        if len(cmd) < 20:
-            return False
-        indicators = 0
-
-        special = len(re.findall(r'[`$\[\]{}()\\^]', cmd))
-        if len(cmd) > 0 and special / len(cmd) > 0.15:
-            indicators += 1
-        if re.search(r'["\'][^"\']{1,10}["\']\s*\+\s*["\']', cmd):
-            indicators += 1
-        if re.search(r'\$\w+\s*=\s*["\'].*["\']\s*;', cmd):
-            indicators += 1
-        if re.search(r'\[char\]|\[int\].*-join', cmd, re.I):
-            indicators += 1
-        if cmd.count('^') > 5:
-            indicators += 1
-        if re.search(r'[A-Za-z0-9+/]{40,}={0,2}', cmd):
-            indicators += 1
-
-        return indicators >= 2
+        from aiohai.core.analysis.utils import is_obfuscated
+        return is_obfuscated(cmd)
 
 
 __all__ = [

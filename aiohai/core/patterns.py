@@ -72,92 +72,108 @@ TIER3_PATH_PATTERNS = [
     r'(?i).*cookies.*',
 ]
 
-# Financial path patterns (superset used by SensitiveOperationDetector)
-FINANCIAL_PATH_PATTERNS = [
-    # Tax software
-    r'(?i)turbotax', r'(?i)taxact', r'(?i)h&r\s*block', r'(?i)taxcut',
-    r'(?i)\\tax\s*return', r'(?i)\\taxes\\',
-    # Financial software
-    r'(?i)quicken', r'(?i)\\qdata\\', r'(?i)\.qdf$', r'(?i)\.qfx$',
-    r'(?i)quickbooks', r'(?i)\.qbw$', r'(?i)\.qbb$',
-    r'(?i)\\mint\\', r'(?i)\\ynab\\', r'(?i)\.ynab4$',
-    r'(?i)gnucash', r'(?i)moneydance', r'(?i)\\money\\',
-    # Banking/financial exports
-    r'(?i)bank.*statement', r'(?i)financial.*record',
-    r'(?i)account.*export', r'(?i)transaction.*history',
-    r'(?i)passwords?\.csv', r'(?i)passwords?\.xlsx?',
-    r'(?i)password.*export', r'(?i)credential.*export',
-    r'(?i)\\statements?\\', r'(?i)\\banking\\',
-    # Investment
-    r'(?i)\\fidelity\\', r'(?i)\\schwab\\', r'(?i)\\vanguard\\',
-    r'(?i)\\etrade\\', r'(?i)\\robinhood\\',
-    r'(?i)brokerage.*statement', r'(?i)investment.*record',
-    r'(?i)\\portfolio\\',
-    # Crypto wallets
-    r'(?i)wallet\.dat', r'(?i)\\bitcoin\\', r'(?i)\\ethereum\\',
-    r'(?i)\\crypto\\', r'(?i)seed.*phrase', r'(?i)recovery.*phrase',
-    # Insurance/medical
-    r'(?i)insurance.*claim', r'(?i)medical.*bill',
-    r'(?i)\\insurance\\', r'(?i)\\claims\\',
-]
-
 # =============================================================================
 # COMMAND PATTERNS
 # =============================================================================
 
-# Commands that are ALWAYS blocked
-BLOCKED_COMMAND_PATTERNS = [
+# Master list: (regex, severity, CWE, description)
+# severity is a string matching Severity enum names to avoid importing types.py.
+# BLOCKED_COMMAND_PATTERNS is derived from this list automatically.
+# StaticSecurityAnalyzer imports this directly for scoring/reporting.
+COMMAND_ANALYSIS_PATTERNS = [
     # PowerShell encoded — ALL abbreviations
-    r'(?i)-e\s+[A-Za-z0-9+/=]{10,}', r'(?i)-en\s+[A-Za-z0-9+/=]{10,}',
-    r'(?i)-enc\s+[A-Za-z0-9+/=]{10,}', r'(?i)-enco', r'(?i)-encod',
-    r'(?i)-encode', r'(?i)-encodedcommand',
+    (r'(?i)-e\s+[A-Za-z0-9+/=]{10,}', 'CRITICAL', 'CWE-78', 'Encoded command'),
+    (r'(?i)-en\s+[A-Za-z0-9+/=]{10,}', 'CRITICAL', 'CWE-78', 'Encoded command'),
+    (r'(?i)-enc\s+[A-Za-z0-9+/=]{10,}', 'CRITICAL', 'CWE-78', 'Encoded command'),
+    (r'(?i)-enco', 'CRITICAL', 'CWE-78', 'Encoded command prefix'),
+    (r'(?i)-encod', 'CRITICAL', 'CWE-78', 'Encoded command prefix'),
+    (r'(?i)-encode', 'CRITICAL', 'CWE-78', 'Encoded command prefix'),
+    (r'(?i)-encodedcommand', 'CRITICAL', 'CWE-78', 'Encoded command'),
     # PowerShell dangerous
-    r'(?i)invoke-expression', r'(?i)\biex\s*[\(\"\'$]',
-    r'(?i)\[scriptblock\]::create', r'(?i)add-type.*-typedefinition',
-    r'(?i)new-object.*net\.webclient', r'(?i)downloadstring', r'(?i)downloadfile',
-    r'(?i)invoke-webrequest.*\|\s*iex', r'(?i)start-bitstransfer',
-    r'(?i)-windowstyle\s+hidden', r'(?i)\[convert\]::frombase64',
-    r'(?i)\[System\.Reflection\.Assembly\]::Load',
+    (r'(?i)invoke-expression', 'CRITICAL', 'CWE-78', 'PowerShell IEX'),
+    (r'(?i)\biex\s*[\(\"\'$]', 'CRITICAL', 'CWE-78', 'PowerShell IEX alias'),
+    (r'(?i)\[scriptblock\]::create', 'CRITICAL', 'CWE-78', 'Dynamic script block'),
+    (r'(?i)add-type.*-typedefinition', 'HIGH', 'CWE-78', 'C# compilation'),
+    (r'(?i)new-object.*net\.webclient', 'HIGH', 'CWE-78', 'WebClient instantiation'),
+    (r'(?i)downloadstring', 'CRITICAL', 'CWE-78', 'Remote download + execute'),
+    (r'(?i)downloadfile', 'HIGH', 'CWE-78', 'File download'),
+    (r'(?i)invoke-webrequest.*\|\s*iex', 'CRITICAL', 'CWE-78', 'Download + execute'),
+    (r'(?i)start-bitstransfer', 'HIGH', 'CWE-78', 'BITS download'),
+    (r'(?i)-windowstyle\s+hidden', 'HIGH', 'CWE-78', 'Hidden window'),
+    (r'(?i)\[convert\]::frombase64', 'HIGH', 'CWE-506', 'Base64 decoding'),
+    (r'(?i)frombase64string', 'HIGH', 'CWE-506', 'Base64 decoding'),
+    (r'(?i)\[System\.Reflection\.Assembly\]::Load', 'CRITICAL', 'CWE-78', 'Assembly loading'),
     # Defense evasion
-    r'(?i)set-mppreference.*-disable', r'(?i)add-mppreference.*-exclusion',
-    r'(?i)-executionpolicy\s+(bypass|unrestricted)',
-    r'(?i)amsiutils', r'(?i)amsiinitfailed', r'(?i)\[ref\]\.assembly\.gettype.*amsi',
+    (r'(?i)set-mppreference.*-disable', 'CRITICAL', 'CWE-78', 'Defender disable'),
+    (r'(?i)add-mppreference.*-exclusion', 'HIGH', 'CWE-78', 'Defender exclusion'),
+    (r'(?i)-executionpolicy\s+(bypass|unrestricted)', 'CRITICAL', 'CWE-78', 'Policy bypass'),
+    (r'(?i)amsiutils', 'CRITICAL', 'CWE-78', 'AMSI bypass'),
+    (r'(?i)amsiinitfailed', 'CRITICAL', 'CWE-78', 'AMSI bypass'),
+    (r'(?i)\[ref\]\.assembly\.gettype.*amsi', 'CRITICAL', 'CWE-78', 'AMSI bypass via reflection'),
     # CMD dangerous
-    r'(?i)certutil.*-urlcache', r'(?i)certutil.*-encode', r'(?i)certutil.*-decode',
-    r'(?i)bitsadmin.*/transfer', r'(?i)\bmshta\b',
-    r'(?i)rundll32.*javascript', r'(?i)regsvr32.*/s',
-    r'(?i)\bbcdedit\b', r'(?i)\bdiskpart\b', r'(?i)format\s+[a-z]:',
+    (r'(?i)certutil.*-urlcache', 'CRITICAL', 'CWE-78', 'certutil download'),
+    (r'(?i)certutil.*-encode', 'HIGH', 'CWE-506', 'certutil encode'),
+    (r'(?i)certutil.*-decode', 'HIGH', 'CWE-506', 'certutil decode'),
+    (r'(?i)bitsadmin.*/transfer', 'HIGH', 'CWE-78', 'BITS download'),
+    (r'(?i)\bmshta\b', 'CRITICAL', 'CWE-78', 'MSHTA execution'),
+    (r'(?i)rundll32.*javascript', 'CRITICAL', 'CWE-78', 'rundll32 JavaScript'),
+    (r'(?i)regsvr32.*/s', 'HIGH', 'CWE-78', 'Silent DLL registration'),
+    (r'(?i)\bbcdedit\b', 'CRITICAL', 'CWE-78', 'Boot config modification'),
+    (r'(?i)\bdiskpart\b', 'CRITICAL', 'CWE-78', 'Disk partition modification'),
+    (r'(?i)format\s+[a-z]:', 'CRITICAL', 'CWE-78', 'Drive formatting'),
     # Persistence — COMPREHENSIVE
-    r'(?i)schtasks.*/create', r'(?i)\bsc\s+create\b', r'(?i)new-service',
-    r'(?i)reg\s+add.*\\run', r'(?i)new-itemproperty.*\\run',
-    r'(?i)set-wmiinstance.*__eventfilter',
-    r'(?i)\\start\s*menu\\programs\\startup',
-    r'(?i)\$profile',
-    r'(?i)\\currentversion\\explorer\\shell',
-    r'(?i)userinit', r'(?i)winlogon\\shell',
+    (r'(?i)schtasks.*/create', 'HIGH', 'CWE-78', 'Scheduled task creation'),
+    (r'(?i)\bsc\s+create\b', 'HIGH', 'CWE-78', 'Service creation'),
+    (r'(?i)new-service', 'HIGH', 'CWE-78', 'PowerShell service creation'),
+    (r'(?i)reg\s+add.*\\run', 'HIGH', 'CWE-78', 'Registry Run key'),
+    (r'(?i)new-itemproperty.*\\run', 'HIGH', 'CWE-78', 'Registry Run via PowerShell'),
+    (r'(?i)set-wmiinstance.*__eventfilter', 'CRITICAL', 'CWE-78', 'WMI event subscription'),
+    (r'(?i)\\start\s*menu\\programs\\startup', 'HIGH', 'CWE-78', 'Startup folder persistence'),
+    (r'(?i)\$profile', 'HIGH', 'CWE-78', 'PowerShell profile modification'),
+    (r'(?i)\\currentversion\\explorer\\shell', 'HIGH', 'CWE-78', 'Shell folders modification'),
+    (r'(?i)userinit', 'HIGH', 'CWE-78', 'Userinit key modification'),
+    (r'(?i)winlogon\\shell', 'HIGH', 'CWE-78', 'Winlogon shell modification'),
     # WMI abuse
-    r'(?i)wmic.*process.*call.*create', r'(?i)invoke-wmimethod.*win32_process',
+    (r'(?i)wmic.*process.*call.*create', 'HIGH', 'CWE-78', 'WMI process creation'),
+    (r'(?i)invoke-wmimethod.*win32_process', 'HIGH', 'CWE-78', 'WMI process via PowerShell'),
     # Credential theft
-    r'(?i)mimikatz', r'(?i)sekurlsa', r'(?i)procdump.*lsass',
+    (r'(?i)mimikatz', 'CRITICAL', 'CWE-78', 'Mimikatz credential dump'),
+    (r'(?i)sekurlsa', 'CRITICAL', 'CWE-78', 'Credential dumping'),
+    (r'(?i)procdump.*lsass', 'CRITICAL', 'CWE-78', 'LSASS process dump'),
     # Privilege escalation
-    r'(?i)net\s+user.*\/add', r'(?i)net\s+localgroup.*admin',
+    (r'(?i)net\s+user.*\/add', 'HIGH', 'CWE-78', 'User creation'),
+    (r'(?i)net\s+localgroup.*admin', 'CRITICAL', 'CWE-78', 'Admin group modification'),
     # Obfuscation patterns
-    r'(?i)bytes\.fromhex',
-    r'(?i)codecs\.decode\s*\([^)]+,\s*["\']rot',
-    r'(?i)\[char\]\s*\d+(?:\s*\+\s*\[char\]\s*\d+){3,}',
-    r'(?i)chr\s*\(\s*\d+\s*\)(?:\s*\+\s*chr\s*\(\s*\d+\s*\)){3,}',
-    r'(?i)zlib\.decompress', r'(?i)gzip\.decompress',
-    r'(?i)bz2\.decompress', r'(?i)lzma\.decompress',
+    (r'(?i)bytes\.fromhex', 'HIGH', 'CWE-506', 'Hex-encoded payload'),
+    (r'(?i)codecs\.decode\s*\([^)]+,\s*["\']rot', 'HIGH', 'CWE-506', 'ROT13 obfuscation'),
+    (r'(?i)\[char\]\s*\d+(?:\s*\+\s*\[char\]\s*\d+){3,}', 'HIGH', 'CWE-506', 'PowerShell char assembly'),
+    (r'(?i)chr\s*\(\s*\d+\s*\)(?:\s*\+\s*chr\s*\(\s*\d+\s*\)){3,}', 'HIGH', 'CWE-506', 'Char code assembly'),
+    (r'(?i)zlib\.decompress', 'CRITICAL', 'CWE-506', 'Compressed payload'),
+    (r'(?i)gzip\.decompress', 'CRITICAL', 'CWE-506', 'Compressed payload'),
+    (r'(?i)bz2\.decompress', 'CRITICAL', 'CWE-506', 'Compressed payload'),
+    (r'(?i)lzma\.decompress', 'CRITICAL', 'CWE-506', 'Compressed payload'),
     # Clipboard — COMPREHENSIVE
-    r'(?i)\bclip\b', r'(?i)set-clipboard', r'(?i)get-clipboard',
-    r'(?i)\[System\.Windows\.Forms\.Clipboard\]',
-    r'(?i)Add-Type.*System\.Windows\.Forms.*Clipboard',
-    r'(?i)\bpyperclip\b', r'(?i)\bxerox\b',
-    r'(?i)import\s+pyperclip', r'(?i)import\s+clipboard',
-    r'(?i)Clipboard\.SetText', r'(?i)Clipboard\.GetText',
-    r'(?i)OpenClipboard', r'(?i)SetClipboardData', r'(?i)GetClipboardData',
-    r'(?i)\bxclip\b', r'(?i)\bxsel\b',
+    (r'(?i)\bclip\b', 'MEDIUM', 'CWE-200', 'Clipboard access'),
+    (r'(?i)set-clipboard', 'MEDIUM', 'CWE-200', 'Clipboard write'),
+    (r'(?i)get-clipboard', 'MEDIUM', 'CWE-200', 'Clipboard read'),
+    (r'(?i)\[System\.Windows\.Forms\.Clipboard\]', 'MEDIUM', 'CWE-200', '.NET Clipboard access'),
+    (r'(?i)Add-Type.*System\.Windows\.Forms.*Clipboard', 'MEDIUM', 'CWE-200', 'Clipboard type loading'),
+    (r'(?i)\bpyperclip\b', 'MEDIUM', 'CWE-200', 'Python clipboard module'),
+    (r'(?i)\bxerox\b', 'MEDIUM', 'CWE-200', 'Python clipboard module'),
+    (r'(?i)import\s+pyperclip', 'MEDIUM', 'CWE-200', 'Clipboard import'),
+    (r'(?i)import\s+clipboard', 'MEDIUM', 'CWE-200', 'Clipboard import'),
+    (r'(?i)Clipboard\.SetText', 'MEDIUM', 'CWE-200', '.NET Clipboard write'),
+    (r'(?i)Clipboard\.GetText', 'MEDIUM', 'CWE-200', '.NET Clipboard read'),
+    (r'(?i)OpenClipboard', 'MEDIUM', 'CWE-200', 'Win32 Clipboard access'),
+    (r'(?i)SetClipboardData', 'MEDIUM', 'CWE-200', 'Win32 Clipboard write'),
+    (r'(?i)GetClipboardData', 'MEDIUM', 'CWE-200', 'Win32 Clipboard read'),
+    (r'(?i)\bxclip\b', 'MEDIUM', 'CWE-200', 'Linux clipboard'),
+    (r'(?i)\bxsel\b', 'MEDIUM', 'CWE-200', 'Linux clipboard'),
 ]
+
+# Flat list derived from COMMAND_ANALYSIS_PATTERNS — used by CommandValidator
+# for hard-blocking (no severity needed, just block/allow).
+BLOCKED_COMMAND_PATTERNS = [p[0] for p in COMMAND_ANALYSIS_PATTERNS]
 
 # UAC bypass patterns
 UAC_BYPASS_PATTERNS = [
@@ -165,27 +181,6 @@ UAC_BYPASS_PATTERNS = [
     r'(?i)hkcu\\software\\classes\\mscfile',
     r'(?i)hkcu\\software\\microsoft\\windows\\currentversion\\app\s*paths',
     r'(?i)hkcu\\environment.*windir',
-]
-
-# Clipboard blocking patterns (extended set used by SensitiveOperationDetector)
-CLIPBOARD_BLOCK_PATTERNS = [
-    # PowerShell clipboard
-    r'(?i)\bclip\b', r'(?i)set-clipboard', r'(?i)get-clipboard',
-    r'(?i)\[System\.Windows\.Forms\.Clipboard\]',
-    r'(?i)Add-Type.*System\.Windows\.Forms.*Clipboard',
-    # Python clipboard modules
-    r'(?i)\bpyperclip\b', r'(?i)\bxerox\b', r'(?i)\bclipboard\b',
-    r'(?i)import\s+pyperclip', r'(?i)import\s+clipboard',
-    r'(?i)from\s+xerox\s+import',
-    # .NET clipboard
-    r'(?i)System\.Windows\.Clipboard',
-    r'(?i)Clipboard\.SetText', r'(?i)Clipboard\.GetText',
-    r'(?i)Clipboard\.SetData', r'(?i)Clipboard\.GetData',
-    # Win32 API
-    r'(?i)OpenClipboard', r'(?i)SetClipboardData', r'(?i)GetClipboardData',
-    r'(?i)EmptyClipboard', r'(?i)CloseClipboard',
-    # Linux clipboard
-    r'(?i)\bxclip\b', r'(?i)\bxsel\b',
 ]
 
 # =============================================================================

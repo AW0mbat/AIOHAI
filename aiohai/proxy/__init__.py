@@ -22,7 +22,7 @@ from aiohai.proxy.action_parser import ActionParser
 from aiohai.proxy.approval import ApprovalManager
 from aiohai.proxy.executor import SecureExecutor
 from aiohai.proxy.circuit_breaker import OllamaCircuitBreaker
-from aiohai.proxy.startup import StartupSecurityVerifier
+from aiohai.core.audit.startup import StartupSecurityVerifier
 from aiohai.proxy.dual_llm import DualLLMVerifier
 
 __all__ = [

@@ -101,6 +101,16 @@ class UnifiedSecureProxy:
         self.config.log_dir.mkdir(parents=True, exist_ok=True)
         self.config.secure_temp_dir.mkdir(parents=True, exist_ok=True)
 
+        # Load raw config.json once for all init helpers
+        config_path = self.config.base_dir / 'config' / 'config.json'
+        self._raw_config = {}
+        if config_path.exists():
+            try:
+                with open(config_path, encoding='utf-8') as f:
+                    self._raw_config = json.load(f)
+            except Exception:
+                pass  # UnifiedConfig handles defaults
+
         # Initialize core components
         self.logger = SecurityLogger(self.config)
         self.alerts = AlertManager(self.config, self.logger)
@@ -175,12 +185,7 @@ class UnifiedSecureProxy:
     def _init_office_components(self):
         """Initialize Office document security components."""
         try:
-            config_path = self.config.base_dir / 'config' / 'config.json'
-            office_config = {}
-            if config_path.exists():
-                with open(config_path, encoding='utf-8') as f:
-                    full_cfg = json.load(f)
-                    office_config = full_cfg.get('office', {})
+            office_config = self._raw_config.get('office', {})
 
             if office_config.get('enabled', False):
                 self.doc_scanner = DocumentContentScanner(
@@ -249,12 +254,7 @@ class UnifiedSecureProxy:
     def _init_smart_home(self):
         """Initialize smart home integration components."""
         try:
-            config_path = self.config.base_dir / 'config' / 'config.json'
-            sh_config = {}
-            if config_path.exists():
-                with open(config_path, encoding='utf-8') as f:
-                    full_cfg = json.load(f)
-                    sh_config = full_cfg.get('smart_home', {})
+            sh_config = self._raw_config.get('smart_home', {})
 
             if sh_config.get('enabled', True):
                 self.service_registry = LocalServiceRegistry(self.logger)
@@ -274,9 +274,8 @@ class UnifiedSecureProxy:
                     description='Home Assistant')
 
                 # Load custom services from config
-                if config_path.exists():
-                    with open(config_path, encoding='utf-8') as f:
-                        self.service_registry.load_from_config(json.load(f))
+                if self._raw_config:
+                    self.service_registry.load_from_config(self._raw_config)
 
                 self.api_query_executor = LocalAPIQueryExecutor(
                     self.service_registry, self.logger, self.pii_protector)

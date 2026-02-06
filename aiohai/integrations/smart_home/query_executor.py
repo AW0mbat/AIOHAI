@@ -62,7 +62,7 @@ class LocalAPIQueryExecutor:
                 if 'json' in content_type or 'text' in content_type:
                     text = data.decode('utf-8', errors='replace')
                     if self.pii_protector:
-                        text = self.pii_protector.redact(text)
+                        text = self.pii_protector.redact_for_logging(text)
 
                     self.logger.log_action("LOCAL_API_QUERY", url, "SUCCESS",
                                            {'service': service_name, 'bytes': len(data)})

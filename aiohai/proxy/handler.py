@@ -55,6 +55,17 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         pass  # Suppress default logging
 
     def do_GET(self):
+        # Block all requests if policy tampering detected
+        if hasattr(self, 'integrity_verifier') and self.integrity_verifier \
+                and self.integrity_verifier.is_locked_down:
+            self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Service locked down due to policy integrity violation. '
+                         'Restart required.'
+            }).encode())
+            return
         self._forward_request('GET')
 
     def do_POST(self):
@@ -76,6 +87,17 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             self._forward_request('POST')
 
     def do_DELETE(self):
+        # Block all requests if policy tampering detected
+        if hasattr(self, 'integrity_verifier') and self.integrity_verifier \
+                and self.integrity_verifier.is_locked_down:
+            self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Service locked down due to policy integrity violation. '
+                         'Restart required.'
+            }).encode())
+            return
         self._forward_request('DELETE')
 
     def _handle_chat(self):
@@ -627,7 +649,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 data = resp.read(10 * 1024 * 1024)  # 10MB cap
                 text = data.decode('utf-8', errors='replace')
                 if self.pii_protector:
-                    text = self.pii_protector.redact(text)
+                    text = self.pii_protector.redact_for_logging(text)
                 self.logger.log_action("API_QUERY", target, "SUCCESS",
                                        {'service': 'graph_api', 'bytes': len(data)})
                 if self.transparency_tracker:
