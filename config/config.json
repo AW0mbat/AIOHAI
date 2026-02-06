@@ -74,7 +74,7 @@
     },
     "command_execution": {
         "allow_shell": false,
-        "_whitelisted_executables_note": "The authoritative executable whitelist is defined in proxy/aiohai_proxy.py (WHITELISTED_EXECUTABLES constant) and is NOT configurable via this file. The list below is for documentation only. Security fixes F-007/F-008 removed powershell.exe, pwsh.exe, and explorer.exe.",
+        "_whitelisted_executables_note": "The authoritative executable whitelist is defined in aiohai/core/constants.py (WHITELISTED_EXECUTABLES constant) and is NOT configurable via this file. The list below is for documentation only. Security fixes F-007/F-008 removed powershell.exe, pwsh.exe, and explorer.exe.",
         "_reference_whitelist": [
             "cmd.exe",
             "python.exe",

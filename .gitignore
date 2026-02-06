@@ -37,3 +37,8 @@ data/ssl/
 
 # Compiled zip artifacts
 *.zip
+
+# Desktop app build artifacts
+desktop/dist/
+desktop/release/
+desktop/node_modules/

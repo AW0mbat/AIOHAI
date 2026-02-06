@@ -1,6 +1,6 @@
 # AIOHAI — AI-Operated Home & Office Intelligence Proxy
 
-**Version 4.0.0** · Layered Security Architecture for Local AI Agents
+**Version 5.0.0** · Clean Layered Architecture for Local AI Agents
 
 ---
 
@@ -41,18 +41,19 @@ The proxy was designed for a specific threat model: you're running a capable loc
 
 ---
 
-## What's New in v4.0.0
+## What's New in v5.0.0
 
-This release transforms AIOHAI from a monolithic architecture into a layered system:
+v5.0.0 completes the architectural transformation started in v4.0.0. All 35 classes have been extracted from the original monolithic files into the `aiohai/` package, and the legacy `proxy/` and `security/` directories have been removed entirely.
 
-- **AIOHAI Core** — Accessor-agnostic trust infrastructure (types, access control, crypto, audit, analysis, network, resources)
-- **AIOHAI Integrations** — Domain-specific adapters (Home Assistant, Office/Graph API)
-- **AIOHAI Proxy** — AI-specific enforcement layer
-- **AIOHAI Agent** — Placeholder for future capabilities (screen capture, supervised browsing)
+**Key changes from v4.0.0:**
 
-All 24 shared types (11 enums, 10 dataclasses, 3 exceptions) now live in `aiohai/core/types.py`. The original files (`proxy/aiohai_proxy.py`, `security/*`) still work — they import from the new locations with fallbacks for backward compatibility.
+- All code lives exclusively in `aiohai/` — no more monolith files or facade stubs
+- Single entry point: `python -m aiohai`
+- 42% reduction in total Python lines (~18,675 → ~10,865) through deduplication
+- All tests and tools import from canonical `aiohai.*` paths
+- Ghost framework entries removed from `ALLOWED_FRAMEWORK_NAMES`
 
-**New entry point:** `python -m aiohai` (the old `python proxy/aiohai_proxy.py` still works)
+See `CHANGELOG_5.0.0.md` for migration details if upgrading from v4.0.0.
 
 ---
 
@@ -60,11 +61,16 @@ All 24 shared types (11 enums, 10 dataclasses, 3 exceptions) now live in `aiohai
 
 ```
 C:\AIOHAI\                          (or $AIOHAI_HOME)
-├── aiohai/                         NEW: Layered package (v4.0.0)
-│   ├── __init__.py                 Package root (version 4.0.0)
+├── aiohai/                         All code (~10,865 lines)
+│   ├── __init__.py                 Package root (version 5.0.0)
 │   ├── __main__.py                 Entry point: python -m aiohai
 │   ├── core/                       Layer 1: Trust Infrastructure
-│   │   ├── types.py                24 consolidated types
+│   │   ├── types.py                24 consolidated types (enums, dataclasses, exceptions)
+│   │   ├── version.py              Version constants (single source of truth)
+│   │   ├── patterns.py             All regex patterns (deduplicated)
+│   │   ├── constants.py            Numeric constants, frozen sets
+│   │   ├── templates.py            LLM instruction templates
+│   │   ├── config.py               UnifiedConfig
 │   │   ├── access/                 PathValidator, CommandValidator, SessionManager
 │   │   ├── crypto/                 HSM bridge, FIDO2 gate, credentials
 │   │   ├── audit/                  Logger, integrity, transparency, alerts
@@ -72,46 +78,46 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 │   │   ├── network/                NetworkInterceptor
 │   │   └── resources/              ResourceLimiter
 │   ├── integrations/               Layer 2: Domain Adapters
-│   │   ├── smart_home/             Home Assistant, Frigate
-│   │   └── office/                 Office, Graph API
+│   │   ├── smart_home/             Home Assistant, Frigate (5 classes)
+│   │   └── office/                 Office, Graph API (6 classes)
 │   ├── proxy/                      Layer 3: AI Enforcement
-│   │   └── (orchestrator, handler, executor, etc.)
+│   │   ├── orchestrator.py         UnifiedSecureProxy + main()
+│   │   ├── handler.py              UnifiedProxyHandler
+│   │   ├── executor.py             SecureExecutor
+│   │   ├── action_parser.py        ActionParser
+│   │   ├── approval.py             ApprovalManager
+│   │   ├── circuit_breaker.py      OllamaCircuitBreaker
+│   │   ├── dual_llm.py             DualLLMVerifier
+│   │   └── server.py               ThreadedHTTPServer
 │   └── agent/                      Layer 4: Future (placeholder)
-│       └── (screen_capture, browser_supervisor, etc.)
-│
-├── proxy/
-│   └── aiohai_proxy.py             Original proxy (facade imports from aiohai.core)
-├── security/
-│   ├── security_components.py      Analysis engines (facade imports from aiohai.core)
-│   ├── fido2_approval.py           FIDO2/WebAuthn (facade imports from aiohai.core)
-│   └── hsm_integration.py          HSM facade (full impl moved to aiohai.core.crypto)
 ├── config/
-│   └── config.json                 Central configuration
+│   └── config.json                 Central configuration (~300 lines)
 ├── policy/
 │   ├── aiohai_security_policy_v3.0.md   Security policy (injected into LLM context)
 │   ├── ha_framework_v3.md               Home Assistant framework prompt
 │   └── office_framework_v3.md           Office framework prompt
-├── tests/
+├── tests/                          Test suite
 │   ├── conftest.py                 Shared fixtures
-│   ├── test_security.py            Security unit tests
-│   ├── test_startup.py             Integration tests
-│   ├── test_e2e.py                 End-to-end pipeline tests
-│   ├── test_ha_framework.py        Smart home framework tests
-│   └── test_office_framework.py    Office framework tests
+│   ├── test_security.py            96 security unit tests
+│   ├── test_startup.py             16 integration tests
+│   ├── test_e2e.py                 37 end-to-end pipeline tests
+│   ├── test_ha_framework.py        99 smart home framework tests
+│   ├── test_office_framework.py    155 Office framework tests
+│   └── test_extraction_verify_p7.py  Architecture verification tests
 ├── tools/
 │   ├── aiohai_cli.py               Management CLI
 │   ├── register_devices.py         FIDO2 device registration wizard
 │   └── hsm_setup.py                HSM initialization tool
-├── docs/
-│   └── ARCHITECTURE.md             Architecture documentation
 ├── web/
-│   └── templates/                  FIDO2 approval UI
-├── desktop/                        Desktop companion app (Electron)
+│   └── templates/                  FIDO2 approval UI (index.html, register.html)
+├── desktop/                        Desktop companion app (Electron + React)
 │   ├── package.json                Node.js dependencies and scripts
 │   ├── src/main/                   Electron main process (TypeScript)
 │   ├── src/renderer/               React UI (TypeScript + CSS)
 │   ├── start-aiohai.bat            One-click startup (Windows)
 │   └── FIRST_RUN_GUIDE.md          Setup walkthrough
+├── setup/
+│   └── Setup.ps1                   Windows setup and firewall configuration
 └── logs/                           Runtime logs (created automatically)
 ```
 
@@ -143,11 +149,8 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 4. Configure `config/config.json` for your environment
 5. Start the proxy:
    ```bash
-   # New canonical entry point (v4.0.0)
+   # Standard
    python -m aiohai
-
-   # Or the original way (still works)
-   python proxy/aiohai_proxy.py
 
    # Minimal (no hardware security)
    python -m aiohai --no-hsm --no-fido2
@@ -176,11 +179,22 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 
 ---
 
+## Server Stack
+
+| Service | Port | URL | Started by |
+|---------|------|-----|-----------|
+| Open WebUI | 3000 | `http://SERVER_IP:3000` | Docker (auto) |
+| AIOHAI Proxy | 11435 | `http://localhost:11435` | `python -m aiohai` |
+| Ollama | 11434 | `http://localhost:11434` | Windows service (auto) |
+| FIDO2 Approval UI | 8443 | `https://localhost:8443` | AIOHAI proxy (when configured) |
+
+---
+
 ## Desktop Companion App
 
 The `desktop/` directory contains an Electron app that serves as a single pane of glass for AIOHAI — chat, approvals, health monitoring, log viewing, and configuration in one window.
 
-**Status:** Phase 1 in progress. Scaffold validated on Windows. Connection to Open WebUI tested and working.
+**Status:** Phase 1 ChatPanel complete with SSE streaming, markdown rendering, and action card display.
 
 See `desktop/FIRST_RUN_GUIDE.md` for setup instructions.
 
@@ -227,16 +241,26 @@ Primary: **Windows 10/11 Pro**. Linux partially supported (network interception 
 
 ## Version History
 
-### v4.0.0 (Current)
+### v5.0.0 (Current)
+
+**Clean Architecture — Monolith Fully Removed**
+
+- All 35 classes extracted into `aiohai/` package (~10,865 lines of real code)
+- `proxy/` and `security/` directories deleted — all code in `aiohai/` exclusively
+- 42% reduction in total Python lines through deduplication
+- Single entry point: `python -m aiohai`
+- All tests and tools use canonical `aiohai.*` imports
+- Ghost framework entries removed from `ALLOWED_FRAMEWORK_NAMES`
+
+### v4.0.0
 
 **Layered Architecture Refactoring**
 
-- Transformed from monolithic (~9,400 lines across 4 files) to layered package structure
 - Created `aiohai/` package with Core, Integrations, Proxy, and Agent layers
-- Consolidated 24 types (11 enums, 10 dataclasses, 3 exceptions) into `aiohai/core/types.py`
+- Consolidated 24 types into `aiohai/core/types.py`
 - Full HSM implementation moved to `aiohai/core/crypto/hsm_bridge.py`
-- All original import paths continue to work (facade pattern)
-- New entry point: `python -m aiohai`
+- Original monolith files converted to facade/re-export stubs
+- Desktop companion app Phase 1 (ChatPanel with SSE streaming)
 
 ### v3.0.2
 

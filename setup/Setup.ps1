@@ -82,11 +82,10 @@ function Install-OpenWebUIIntegration {
         Write-Status "Ollama not detected on port $OllamaPort — start it with 'ollama serve'" "WARN"
     }
     
-    # Create proxy directory
-    $proxyDir = Join-Path $InstallPath "proxy"
-    if (-not (Test-Path $proxyDir)) {
-        New-Item -ItemType Directory -Path $proxyDir -Force | Out-Null
-        Write-Status "Created proxy directory" "OK"
+    # Verify aiohai package directory exists
+    $aiohaiDir = Join-Path $InstallPath "aiohai"
+    if (-not (Test-Path $aiohaiDir)) {
+        Write-Status "AIOHAI package directory not found — ensure the codebase is deployed to $InstallPath" "WARN"
     }
     
     # Configure firewall
@@ -177,20 +176,22 @@ function Install-FirewallRules {
 }
 
 function Start-SecureProxy {
-    Write-Status "Starting AIOHAI Proxy v4.0.0..." "INFO"
+    Write-Status "Starting AIOHAI Proxy v5.0.0..." "INFO"
     
-    # Use unified proxy v2.3 (only version)
-    $proxyScript = Join-Path $InstallPath "proxy\aiohai_proxy.py"
+    # Use python -m aiohai as canonical entry point
+    $proxyModule = "aiohai"
     
-    if (-not (Test-Path $proxyScript)) {
-        Write-Status "Proxy script not found: $proxyScript" "ERROR"
-        Write-Status "Please ensure aiohai_proxy.py is in the proxy folder" "ERROR"
+    # Check if aiohai package exists
+    $aiohaInit = Join-Path $InstallPath "aiohai\__init__.py"
+    if (-not (Test-Path $aiohaInit)) {
+        Write-Status "AIOHAI package not found at: $InstallPath\aiohai\" "ERROR"
+        Write-Status "Please ensure the aiohai package is in the install directory" "ERROR"
         return
     }
     
     # Check if already running
     $existing = Get-Process -Name "python*" -ErrorAction SilentlyContinue | 
-        Where-Object { $_.CommandLine -like "*aiohai_proxy*" }
+        Where-Object { $_.CommandLine -like "*-m aiohai*" }
     
     if ($existing) {
         Write-Status "Proxy already running (PID: $($existing.Id))" "WARN"
@@ -200,7 +201,7 @@ function Start-SecureProxy {
     # Start proxy in background
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "python"
-    $psi.Arguments = "`"$proxyScript`" --listen-port $ProxyPort --ollama-port $OllamaPort"
+    $psi.Arguments = "-m aiohai --listen-port $ProxyPort --ollama-port $OllamaPort"
     $psi.WorkingDirectory = $InstallPath
     $psi.UseShellExecute = $true
     $psi.WindowStyle = "Minimized"
@@ -223,7 +224,7 @@ function Stop-SecureProxy {
     Write-Status "Stopping AIOHAI Proxy..." "INFO"
     
     $processes = Get-Process -Name "python*" -ErrorAction SilentlyContinue | 
-        Where-Object { $_.CommandLine -like "*aiohai_proxy*" }
+        Where-Object { $_.CommandLine -like "*-m aiohai*" }
     
     if ($processes) {
         $processes | ForEach-Object {
@@ -277,7 +278,7 @@ function Get-ProxyStatus {
     Write-Host ""
     Write-Host "Proxy Processes:" -ForegroundColor Yellow
     $processes = Get-Process -Name "python*" -ErrorAction SilentlyContinue | 
-        Where-Object { $_.CommandLine -like "*aiohai_proxy*" }
+        Where-Object { $_.CommandLine -like "*-m aiohai*" }
     
     if ($processes) {
         $processes | ForEach-Object {

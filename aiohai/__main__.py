@@ -1,13 +1,16 @@
 """
 AIOHAI Entry Point — Run with: python -m aiohai
 
-This is the canonical entry point for AIOHAI. The old entry point
-(proxy/aiohai_proxy.py) remains as a backward-compatible wrapper.
+This is the canonical (and only) entry point for AIOHAI.
 
 Usage:
     python -m aiohai [OPTIONS]
 
-Options will be the same as the current proxy/aiohai_proxy.py CLI.
+Options:
+    --no-hsm        Start without Nitrokey HSM hardware
+    --no-fido2      Start without FIDO2 hardware key approval
+    --hsm-pin PIN   Provide HSM PIN on command line
+    --hsm-optional  Allow startup without HSM connected
 """
 
 import sys
@@ -15,11 +18,6 @@ import sys
 
 def main():
     """Main entry point for AIOHAI."""
-    # During refactoring transition, delegate to the old entry point
-    # This will be updated in Phase 8 when proxy components are moved
-    
-    # For now, import and run from the original location
-    # This ensures the existing code continues to work during transition
     from aiohai.proxy.orchestrator import main as proxy_main
     return proxy_main()
 

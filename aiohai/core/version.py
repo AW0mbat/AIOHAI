@@ -15,7 +15,7 @@ Usage:
 
 # The official AIOHAI package version
 # Update this when releasing new versions
-__version__ = "4.0.0"
+__version__ = "5.0.0"
 
 
 # =============================================================================
@@ -48,8 +48,6 @@ CONFIG_SCHEMA_VERSION = "3.0"
 ALLOWED_FRAMEWORK_NAMES = frozenset({
     'ha_framework_v3.md',
     'office_framework_v3.md',
-    'ha_framework_v4.md',
-    'office_framework_v4.md',
 })
 
 
