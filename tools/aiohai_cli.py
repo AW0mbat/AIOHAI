@@ -129,7 +129,7 @@ def _load_config() -> dict:
 def _load_credential_store():
     """Load the FIDO2 credential store."""
     try:
-        from security.fido2_approval import CredentialStore, UserRole
+        from aiohai.core.crypto.credentials import CredentialStore; from aiohai.core.types import UserRole
         storage = PROJECT_ROOT / "data" / "fido2"
         return CredentialStore(storage)
     except ImportError:
@@ -139,7 +139,7 @@ def _load_credential_store():
 def _load_hsm_manager():
     """Load HSM manager (mock if hardware unavailable)."""
     try:
-        from security.hsm_integration import get_hsm_manager
+        from aiohai.core.crypto.hsm_bridge import get_hsm_manager
         return get_hsm_manager()
     except ImportError:
         return None
@@ -277,7 +277,7 @@ def cmd_setup(args):
             username = input("  Admin username (e.g. 'dad', 'admin'): ").strip()
             if username:
                 try:
-                    from security.fido2_approval import UserRole
+                    from aiohai.core.types import UserRole
                     store.add_user(username, UserRole.ADMIN)
                     print(f"  {OK} Admin '{username}' created")
                 except Exception as e:
@@ -565,7 +565,7 @@ def _users_list(store):
 def _users_add(store):
     heading("Add User")
     try:
-        from security.fido2_approval import UserRole
+        from aiohai.core.types import UserRole
     except ImportError:
         print(f"  {FAIL} Cannot import UserRole")
         return
@@ -653,7 +653,7 @@ def _users_remove(store, username: Optional[str]):
 def _users_modify(store, username: Optional[str]):
     heading("Modify User")
     try:
-        from security.fido2_approval import UserRole
+        from aiohai.core.types import UserRole
     except ImportError:
         print(f"  {FAIL} Cannot import UserRole")
         return
@@ -1321,14 +1321,14 @@ def _run_doctor_checks(quiet: bool = False) -> Dict[str, List[str]]:
 
     # 2. Core module
     try:
-        from security.security_components import StaticSecurityAnalyzer
+        from aiohai.core.analysis.static_analyzer import StaticSecurityAnalyzer
         issues['passed'].append("Core security module")
     except ImportError:
         issues['critical'].append("Core security module not found")
 
     # 3. FIDO2 module
     try:
-        from security.fido2_approval import FIDO2ApprovalServer
+        from aiohai.core.crypto.fido_gate import FIDO2ApprovalServer
         issues['passed'].append("FIDO2/WebAuthn module")
     except ImportError as e:
         missing = str(e).split("'")[1] if "'" in str(e) else str(e)

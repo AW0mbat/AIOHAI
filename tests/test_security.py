@@ -37,16 +37,29 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from proxy.aiohai_proxy import (
-    UnifiedConfig, SecurityLogger, AlertManager, AlertSeverity,
-    IntegrityVerifier, PathValidator, CommandValidator, ContentSanitizer,
-    NetworkInterceptor, SecureExecutor, ApprovalManager, ActionParser,
-    TrustLevel, SecurityError, SecurityLevel,
+from aiohai.core.types import (
+    AlertSeverity, TrustLevel, SecurityError, SecurityLevel,
+)
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.audit.integrity import IntegrityVerifier
+from aiohai.core.access.path_validator import PathValidator
+from aiohai.core.access.command_validator import CommandValidator
+from aiohai.core.analysis.sanitizer import ContentSanitizer
+from aiohai.core.network.interceptor import NetworkInterceptor
+from aiohai.core.patterns import (
     BLOCKED_PATH_PATTERNS, BLOCKED_COMMAND_PATTERNS,
     INJECTION_PATTERNS, INVISIBLE_CHARS, HOMOGLYPHS, FULLWIDTH_MAP,
-    UAC_BYPASS_PATTERNS, SAFE_ENV_VARS, WHITELISTED_EXECUTABLES,
+    UAC_BYPASS_PATTERNS,
+)
+from aiohai.core.constants import (
+    SAFE_ENV_VARS, WHITELISTED_EXECUTABLES,
     SESSION_ID_BYTES, APPROVAL_ID_BYTES, HASH_CHUNK_SIZE,
 )
+from aiohai.proxy.executor import SecureExecutor
+from aiohai.proxy.approval import ApprovalManager
+from aiohai.proxy.action_parser import ActionParser
 
 
 # =========================================================================
@@ -80,7 +93,7 @@ class TestExposedAdminPanel:
 
     def test_fido2_api_secret_is_strong(self):
         """API secret must be at least 256 bits of randomness."""
-        from security.fido2_approval import FIDO2ApprovalServer
+        from aiohai.core.crypto.fido_gate import FIDO2ApprovalServer
         # Mock the FIDO2 dependencies
         with patch.dict('sys.modules', {
             'fido2': MagicMock(),
@@ -288,8 +301,7 @@ class TestReverseProxyBypass:
 
     def test_no_forwarded_header_trust(self):
         """Codebase must not contain X-Forwarded-For or X-Real-IP trust logic."""
-        proxy_file = Path(__file__).parent.parent / "proxy" / "aiohai_proxy.py"
-        content = proxy_file.read_text(encoding='utf-8')
+        proxy_dir = Path(__file__).parent.parent / "aiohai" / "proxy"
         
         # These headers should NOT appear in auth/trust decisions
         dangerous_patterns = [
@@ -299,14 +311,16 @@ class TestReverseProxyBypass:
             'trusted_proxies',
             'REMOTE_ADDR',
         ]
-        for pattern in dangerous_patterns:
-            assert pattern not in content, (
-                f"CRITICAL: Found '{pattern}' in proxy code — potential reverse proxy bypass"
-            )
+        for pyfile in proxy_dir.rglob("*.py"):
+            content = pyfile.read_text(encoding='utf-8')
+            for pattern in dangerous_patterns:
+                assert pattern not in content, (
+                    f"CRITICAL: Found '{pattern}' in {pyfile.name} — potential reverse proxy bypass"
+                )
 
     def test_no_forwarded_header_in_fido2(self):
         """FIDO2 server must not trust proxy headers for auth."""
-        fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
+        fido2_file = Path(__file__).parent.parent / "aiohai" / "core" / "crypto" / "fido_gate.py"
         content = fido2_file.read_text(encoding='utf-8')
         
         for pattern in ['X-Forwarded-For', 'X-Real-IP']:
@@ -316,7 +330,7 @@ class TestReverseProxyBypass:
 
     def test_fido2_api_uses_secret_not_ip(self):
         """FIDO2 internal API must authenticate via shared secret, not IP."""
-        fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
+        fido2_file = Path(__file__).parent.parent / "aiohai" / "core" / "crypto" / "fido_gate.py"
         content = fido2_file.read_text(encoding='utf-8')
         
         assert 'X-AIOHAI-Secret' in content, "FIDO2 API secret header not found"
@@ -324,7 +338,7 @@ class TestReverseProxyBypass:
 
     def test_fido2_secret_is_timing_safe(self):
         """Secret comparison must use hmac.compare_digest, not ==."""
-        fido2_file = Path(__file__).parent.parent / "security" / "fido2_approval.py"
+        fido2_file = Path(__file__).parent.parent / "aiohai" / "core" / "crypto" / "fido_gate.py"
         content = fido2_file.read_text(encoding='utf-8')
         
         # Find the _verify_api_secret method and confirm it uses hmac
@@ -568,12 +582,12 @@ class TestCredentialLeakage:
 
     @pytest.fixture
     def redactor(self):
-        from security.security_components import CredentialRedactor
+        from aiohai.core.analysis.credentials import CredentialRedactor
         return CredentialRedactor()
 
     @pytest.fixture
     def pii_protector(self):
-        from security.security_components import PIIProtector
+        from aiohai.core.analysis.pii_protector import PIIProtector
         return PIIProtector()
 
     # --- CredentialRedactor ---
@@ -822,12 +836,12 @@ class TestFIDO2ClientRetry:
 
     def test_retry_count_constant(self):
         """Client must retry exactly MAX_RETRIES times."""
-        from security.fido2_approval import FIDO2ApprovalClient
+        from aiohai.core.crypto.fido_gate import FIDO2ApprovalClient
         assert FIDO2ApprovalClient.MAX_RETRIES == 3
 
     def test_verify_property_with_cert(self, tmp_base):
         """_verify must return cert path when file exists."""
-        from security.fido2_approval import FIDO2ApprovalClient
+        from aiohai.core.crypto.fido_gate import FIDO2ApprovalClient
         cert = tmp_base / "data" / "ssl" / "aiohai.crt"
         cert.write_text("fake cert")
         
@@ -839,7 +853,7 @@ class TestFIDO2ClientRetry:
 
     def test_verify_property_without_cert(self):
         """_verify must return True (system CAs) when no cert exists."""
-        from security.fido2_approval import FIDO2ApprovalClient
+        from aiohai.core.crypto.fido_gate import FIDO2ApprovalClient
         client = FIDO2ApprovalClient(
             server_url="https://localhost:8443",
             cert_path="/nonexistent/cert.pem"
@@ -1002,22 +1016,23 @@ class TestCodeHygiene:
 
     def test_no_bare_excepts_in_proxy(self):
         """No bare 'except:' clauses in proxy code."""
-        proxy_file = Path(__file__).parent.parent / "proxy" / "aiohai_proxy.py"
-        for i, line in enumerate(proxy_file.read_text(encoding='utf-8').splitlines(), 1):
-            stripped = line.strip()
-            if stripped == "except:" or stripped.startswith("except: "):
-                # Allow in comments
-                if not line.lstrip().startswith('#'):
-                    pytest.fail(f"Bare except at proxy line {i}: {stripped}")
+        proxy_dir = Path(__file__).parent.parent / "aiohai" / "proxy"
+        for pyfile in proxy_dir.rglob("*.py"):
+            for i, line in enumerate(pyfile.read_text(encoding='utf-8').splitlines(), 1):
+                stripped = line.strip()
+                if stripped == "except:" or stripped.startswith("except: "):
+                    if not line.lstrip().startswith('#'):
+                        pytest.fail(f"Bare except at {pyfile.name} line {i}: {stripped}")
 
     def test_no_bare_excepts_in_security_components(self):
-        """No bare 'except:' clauses in security_components.py."""
-        sc_file = Path(__file__).parent.parent / "security" / "security_components.py"
-        for i, line in enumerate(sc_file.read_text(encoding='utf-8').splitlines(), 1):
-            stripped = line.strip()
-            if stripped == "except:" or stripped.startswith("except: "):
-                if not line.lstrip().startswith('#'):
-                    pytest.fail(f"Bare except at security_components line {i}: {stripped}")
+        """No bare 'except:' clauses in core security code."""
+        core_dir = Path(__file__).parent.parent / "aiohai" / "core"
+        for pyfile in core_dir.rglob("*.py"):
+            for i, line in enumerate(pyfile.read_text(encoding='utf-8').splitlines(), 1):
+                stripped = line.strip()
+                if stripped == "except:" or stripped.startswith("except: "):
+                    if not line.lstrip().startswith('#'):
+                        pytest.fail(f"Bare except at {pyfile.name} line {i}: {stripped}")
 
     def test_no_verify_false_anywhere(self):
         """verify=False must not exist in any Python file."""

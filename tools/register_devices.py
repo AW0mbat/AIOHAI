@@ -26,9 +26,9 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from security.fido2_approval import (
-    CredentialStore, UserRole, FIDO2ApprovalServer
-)
+from aiohai.core.crypto.credentials import CredentialStore
+from aiohai.core.crypto.fido_gate import FIDO2ApprovalServer
+from aiohai.core.types import UserRole
 
 # Map old names for template compatibility
 PermissionLevel = UserRole

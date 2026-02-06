@@ -26,14 +26,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from proxy.aiohai_proxy import (
-    UnifiedConfig, SecurityLogger, AlertManager,
-    ContentSanitizer, ActionParser, ApprovalManager,
-    PathValidator, CommandValidator, SecureExecutor,
-    IntegrityVerifier, UnifiedProxyHandler, UnifiedSecureProxy,
-    AGENTIC_INSTRUCTIONS, BLOCKED_PATH_PATTERNS, TIER3_PATH_PATTERNS,
-    INJECTION_PATTERNS, AlertSeverity, SAFE_ENV_VARS,
-)
+from aiohai.core.types import AlertSeverity
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.audit.integrity import IntegrityVerifier
+from aiohai.core.access.path_validator import PathValidator
+from aiohai.core.access.command_validator import CommandValidator
+from aiohai.core.analysis.sanitizer import ContentSanitizer
+from aiohai.core.patterns import BLOCKED_PATH_PATTERNS, TIER3_PATH_PATTERNS, INJECTION_PATTERNS
+from aiohai.core.constants import SAFE_ENV_VARS
+from aiohai.core.templates import AGENTIC_INSTRUCTIONS
+from aiohai.proxy.action_parser import ActionParser
+from aiohai.proxy.approval import ApprovalManager
+from aiohai.proxy.executor import SecureExecutor
+from aiohai.proxy.handler import UnifiedProxyHandler
+from aiohai.proxy.orchestrator import UnifiedSecureProxy
 
 
 # ---------------------------------------------------------------------------

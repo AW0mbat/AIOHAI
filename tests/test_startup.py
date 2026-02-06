@@ -26,10 +26,12 @@ from io import StringIO
 
 import pytest
 
-from proxy.aiohai_proxy import (
-    UnifiedConfig, UnifiedSecureProxy, SecurityLogger, AlertManager,
-    AlertSeverity, IntegrityVerifier, SecurityError,
-)
+from aiohai.core.types import AlertSeverity, SecurityError
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.audit.integrity import IntegrityVerifier
+from aiohai.proxy.orchestrator import UnifiedSecureProxy
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +308,7 @@ class TestEnvironmentSafety:
 
     def test_blocked_env_patterns_cover_secrets(self):
         """Blocked env patterns in config must catch common secret variable names."""
-        from proxy.aiohai_proxy import SAFE_ENV_VARS
+        from aiohai.core.constants import SAFE_ENV_VARS
         
         # These should NOT be in the safe list
         definitely_unsafe = [
@@ -318,7 +320,7 @@ class TestEnvironmentSafety:
 
     def test_safe_env_vars_are_system_only(self):
         """Safe env vars must be system-level only, no user data."""
-        from proxy.aiohai_proxy import SAFE_ENV_VARS
+        from aiohai.core.constants import SAFE_ENV_VARS
         
         # All safe vars should be Windows system vars
         expected_safe = {

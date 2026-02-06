@@ -36,14 +36,14 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from security.hsm_integration import (
+    from aiohai.core.crypto.hsm_bridge import (
         get_hsm_manager, 
         NitrokeyHSMManager,
-        HSMStatus,
         PKCS11_AVAILABLE
     )
+    from aiohai.core.types import HSMStatus
 except ImportError:
-    print("ERROR: Could not import hsm_integration module")
+    print("ERROR: Could not import aiohai.core.crypto module")
     print("Make sure you're running from the AIOHAI directory")
     sys.exit(1)
 

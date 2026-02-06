@@ -25,22 +25,29 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from proxy.aiohai_proxy import (
-    UnifiedConfig, SecurityLogger, AlertManager, AlertSeverity,
-    DocumentContentScanner, MacroBlocker, MetadataSanitizer,
-    GraphAPIRegistry, ActionType,
+from aiohai.core.types import AlertSeverity, ActionType, ApprovalTier
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.access.path_validator import PathValidator
+from aiohai.core.access.command_validator import CommandValidator
+from aiohai.core.patterns import (
     BLOCKED_PATH_PATTERNS, MACRO_ENABLED_EXTENSIONS,
     SAFE_OFFICE_EXTENSIONS, BLOCKED_EXCEL_FORMULAS,
     BLOCKED_EMBED_EXTENSIONS, BLOCKED_GRAPH_ENDPOINTS,
-    BLOCKED_GRAPH_SCOPES, AGENTIC_INSTRUCTIONS,
-    PathValidator, CommandValidator, SecureExecutor,
+    BLOCKED_GRAPH_SCOPES,
 )
-from security.security_components import (
-    OfficeStackDetector, DocumentAuditLogger,
-)
+from aiohai.core.templates import AGENTIC_INSTRUCTIONS
+from aiohai.proxy.executor import SecureExecutor
+from aiohai.integrations.office.document_scanner import DocumentContentScanner
+from aiohai.integrations.office.macro_blocker import MacroBlocker
+from aiohai.integrations.office.metadata_sanitizer import MetadataSanitizer
+from aiohai.integrations.office.graph_registry import GraphAPIRegistry
+from aiohai.integrations.office.stack_detector import OfficeStackDetector
+from aiohai.integrations.office.audit_logger import DocumentAuditLogger
 # Import FIDO2 OperationClassifier if available
 try:
-    from security.fido2_approval import OperationClassifier, ApprovalTier
+    from aiohai.core.crypto.classifier import OperationClassifier
     FIDO2_AVAILABLE = True
 except ImportError:
     FIDO2_AVAILABLE = False
@@ -164,7 +171,7 @@ class TestDocumentContentScanner(unittest.TestCase):
     def test_with_pii_protector(self):
         """Scanner with PIIProtector should detect PII."""
         try:
-            from security.security_components import PIIProtector
+            from aiohai.core.analysis.pii_protector import PIIProtector
             pii = PIIProtector()
             scanner = DocumentContentScanner(self.logger, pii_protector=pii)
             result = scanner.scan("My SSN is 123-45-6789", ".docx")
@@ -1100,7 +1107,7 @@ class TestAuditRegressions(unittest.TestCase):
     # F-003: Network allowlist must use exact/suffix matching
     def test_f003_allowlist_rejects_substring(self):
         """F-003: evil-github.com must NOT match 'github.com' allowlist entry."""
-        from proxy.aiohai_proxy import NetworkInterceptor, AlertManager
+        from aiohai.core.network.interceptor import NetworkInterceptor; from aiohai.core.audit.alerts import AlertManager
         alerts = AlertManager(self.cfg, self.logger)
         ni = NetworkInterceptor(self.cfg, self.logger, alerts)
         allowed, _ = ni._check_connection("evil-github.com", 443)
@@ -1108,7 +1115,7 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_f003_allowlist_accepts_subdomain(self):
         """F-003: api.github.com SHOULD match 'github.com' allowlist entry."""
-        from proxy.aiohai_proxy import NetworkInterceptor, AlertManager
+        from aiohai.core.network.interceptor import NetworkInterceptor; from aiohai.core.audit.alerts import AlertManager
         alerts = AlertManager(self.cfg, self.logger)
         ni = NetworkInterceptor(self.cfg, self.logger, alerts)
         allowed, _ = ni._check_connection("api.github.com", 443)
@@ -1116,7 +1123,7 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_f003_allowlist_accepts_exact(self):
         """F-003: github.com SHOULD match 'github.com' allowlist entry."""
-        from proxy.aiohai_proxy import NetworkInterceptor, AlertManager
+        from aiohai.core.network.interceptor import NetworkInterceptor; from aiohai.core.audit.alerts import AlertManager
         alerts = AlertManager(self.cfg, self.logger)
         ni = NetworkInterceptor(self.cfg, self.logger, alerts)
         allowed, _ = ni._check_connection("github.com", 443)
@@ -1124,7 +1131,7 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_f003_doh_rejects_substring(self):
         """F-003: notdns.google.evil.com must NOT match DoH server 'dns.google'."""
-        from proxy.aiohai_proxy import NetworkInterceptor, AlertManager
+        from aiohai.core.network.interceptor import NetworkInterceptor; from aiohai.core.audit.alerts import AlertManager
         alerts = AlertManager(self.cfg, self.logger)
         ni = NetworkInterceptor(self.cfg, self.logger, alerts)
         self.assertFalse(ni._is_doh_server("notdns.google.evil.com"))
@@ -1132,12 +1139,12 @@ class TestAuditRegressions(unittest.TestCase):
     # F-007/F-008: Dangerous executables removed from whitelist
     def test_f007_explorer_removed(self):
         """F-007: explorer.exe must not be in the whitelist."""
-        from proxy.aiohai_proxy import WHITELISTED_EXECUTABLES
+        from aiohai.core.constants import WHITELISTED_EXECUTABLES
         self.assertNotIn('explorer.exe', WHITELISTED_EXECUTABLES)
 
     def test_f008_powershell_removed(self):
         """F-008: powershell.exe and pwsh.exe must not be in the whitelist."""
-        from proxy.aiohai_proxy import WHITELISTED_EXECUTABLES
+        from aiohai.core.constants import WHITELISTED_EXECUTABLES
         self.assertNotIn('powershell.exe', WHITELISTED_EXECUTABLES)
         self.assertNotIn('pwsh.exe', WHITELISTED_EXECUTABLES)
 

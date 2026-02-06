@@ -24,15 +24,23 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import after path fix
-from proxy.aiohai_proxy import (
-    UnifiedConfig, SecurityLogger, AlertManager, AlertSeverity,
-    IntegrityVerifier, PathValidator, CommandValidator, ContentSanitizer,
-    NetworkInterceptor, SecureExecutor, ApprovalManager,
-    ActionParser, TrustLevel, SecurityError,
+from aiohai.core.types import AlertSeverity, TrustLevel, SecurityError
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.audit.integrity import IntegrityVerifier
+from aiohai.core.access.path_validator import PathValidator
+from aiohai.core.access.command_validator import CommandValidator
+from aiohai.core.analysis.sanitizer import ContentSanitizer
+from aiohai.core.network.interceptor import NetworkInterceptor
+from aiohai.core.patterns import (
     BLOCKED_PATH_PATTERNS, BLOCKED_COMMAND_PATTERNS, TIER3_PATH_PATTERNS,
     INJECTION_PATTERNS, INVISIBLE_CHARS, HOMOGLYPHS,
-    SESSION_ID_BYTES, HASH_CHUNK_SIZE,
 )
+from aiohai.core.constants import SESSION_ID_BYTES, HASH_CHUNK_SIZE
+from aiohai.proxy.executor import SecureExecutor
+from aiohai.proxy.approval import ApprovalManager
+from aiohai.proxy.action_parser import ActionParser
 
 
 # ---------------------------------------------------------------------------

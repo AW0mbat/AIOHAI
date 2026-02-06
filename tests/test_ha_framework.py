@@ -30,18 +30,20 @@ from io import BytesIO
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from proxy.aiohai_proxy import (
-    UnifiedConfig, SecurityLogger, AlertManager, AlertSeverity,
-    CommandValidator, PathValidator, ActionParser, ActionType,
-    WHITELISTED_EXECUTABLES, DOCKER_COMMAND_TIERS,
-    LocalServiceRegistry, LocalAPIQueryExecutor,
-    AGENTIC_INSTRUCTIONS,
-)
-from security.security_components import (
-    HomeAssistantNotificationBridge,
-    SmartHomeStackDetector,
-    SmartHomeConfigAnalyzer,
-)
+from aiohai.core.types import AlertSeverity, ActionType
+from aiohai.core.config import UnifiedConfig
+from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.audit.alerts import AlertManager
+from aiohai.core.access.command_validator import CommandValidator
+from aiohai.core.access.path_validator import PathValidator
+from aiohai.core.constants import WHITELISTED_EXECUTABLES, DOCKER_COMMAND_TIERS
+from aiohai.core.templates import AGENTIC_INSTRUCTIONS
+from aiohai.proxy.action_parser import ActionParser
+from aiohai.integrations.smart_home.service_registry import LocalServiceRegistry
+from aiohai.integrations.smart_home.query_executor import LocalAPIQueryExecutor
+from aiohai.integrations.smart_home.notification import HomeAssistantNotificationBridge
+from aiohai.integrations.smart_home.stack_detector import SmartHomeStackDetector
+from aiohai.integrations.smart_home.config_analyzer import SmartHomeConfigAnalyzer
 
 
 # =============================================================================
@@ -657,7 +659,7 @@ class TestFrameworkLoading(unittest.TestCase):
         fw = policy_dir / "ha_framework_v3.md"
         fw.write_text("FRAMEWORK_SENTINEL_VALUE_12345")
 
-        from proxy.aiohai_proxy import UnifiedSecureProxy
+        from aiohai.proxy.orchestrator import UnifiedSecureProxy
         proxy_mock = MagicMock()
         proxy_mock.config = self.cfg
         proxy_mock.logger = self.logger
@@ -674,7 +676,7 @@ class TestFrameworkLoading(unittest.TestCase):
         rogue = policy_dir / "evil_framework_inject.md"
         rogue.write_text("INJECTED_PROMPT_SHOULD_NOT_APPEAR")
 
-        from proxy.aiohai_proxy import UnifiedSecureProxy
+        from aiohai.proxy.orchestrator import UnifiedSecureProxy
         proxy_mock = MagicMock()
         proxy_mock.config = self.cfg
         proxy_mock.logger = self.logger
@@ -686,7 +688,7 @@ class TestFrameworkLoading(unittest.TestCase):
 
     def test_no_frameworks_returns_unchanged(self):
         """With no framework files, policy should be unchanged."""
-        from proxy.aiohai_proxy import UnifiedSecureProxy
+        from aiohai.proxy.orchestrator import UnifiedSecureProxy
         proxy_mock = MagicMock()
         proxy_mock.config = self.cfg
         proxy_mock.logger = self.logger
