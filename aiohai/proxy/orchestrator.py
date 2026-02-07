@@ -11,6 +11,7 @@ Phase 5 extraction from proxy/aiohai_proxy.py.
 
 import argparse
 import json
+import os
 import sys
 import time
 import threading
@@ -34,7 +35,7 @@ from aiohai.core.access.command_validator import CommandValidator
 
 from aiohai.proxy.executor import SecureExecutor
 from aiohai.proxy.approval import ApprovalManager
-from aiohai.proxy.handler import UnifiedProxyHandler
+from aiohai.proxy.handler import UnifiedProxyHandler, HandlerContext
 from aiohai.proxy.server import ThreadedHTTPServer
 from aiohai.proxy.circuit_breaker import OllamaCircuitBreaker
 
@@ -617,39 +618,61 @@ class UnifiedSecureProxy:
     # ----- Main start method -----
 
     def start(self) -> None:
+        """O4: Decomposed startup — each step returns (ok, message)."""
         print("=" * 70)
         print("AIOHAI Unified Proxy v3.0 - HARDWARE SECURITY + FIDO2 APPROVAL")
         print("=" * 70)
 
-        # Fail-secure: refuse to start without security components
+        # Ordered startup steps. Each returns True on success.
+        steps = [
+            ("Security components",    self._step_security_components),
+            ("Hardware Security Module", self._step_hsm_status),
+            ("Startup security checks", self._step_startup_checks),
+            ("Policy integrity (hash)", self._step_policy_hash),
+            ("Policy integrity (HSM)",  self._step_policy_hsm),
+            ("Network interceptor",     self._step_network),
+            ("Integrity monitoring",    self._step_integrity_monitor),
+            ("FIDO2/WebAuthn system",   self._step_fido2),
+            ("Request handler",         self._step_configure_handler),
+            ("HTTP proxy server",       self._step_start_server),
+        ]
+
+        for i, (name, step_fn) in enumerate(steps):
+            print(f"\n[{i}/{len(steps) - 1}] {name}...")
+            if not step_fn():
+                return  # step_fn handles sys.exit or error messages
+
+    def _step_security_components(self) -> bool:
         if not _SECURITY_COMPONENTS_AVAILABLE:
             if self.config.allow_degraded_security:
-                print("\n  ⚠  DEGRADED MODE: Security components unavailable")
-                print("     Static analysis, PII protection, resource limits DISABLED")
+                print("  ⚠  DEGRADED MODE: Security components unavailable")
                 self.logger.log_event("DEGRADED_MODE", AlertSeverity.HIGH, {
                     'reason': 'Security components import failed'})
             else:
-                print("\n  ✗ SECURITY COMPONENTS UNAVAILABLE")
-                print("    Cannot start without security components.")
-                print("    Use --allow-degraded flag to override (NOT recommended).")
+                print("  ✗ SECURITY COMPONENTS UNAVAILABLE")
+                print("    Use --allow-degraded flag to override.")
                 sys.exit(1)
+        else:
+            print("  ✓ Available")
+        return True
 
-        # 0. HSM Status
-        if self.config.hsm_enabled:
-            print("\n[0/8] Hardware Security Module...")
-            if self.hsm_manager and self.hsm_manager.is_connected():
-                print("  ✓ Nitrokey HSM connected and authenticated")
-                keys = self.hsm_manager.list_keys()
-                if keys:
-                    print(f"  ✓ {len(keys)} keys available")
-            elif self.config.hsm_required:
-                print("  ✗ HSM required but not connected")
-                sys.exit(1)
-            else:
-                print("  ⚠ HSM not connected (running without hardware security)")
+    def _step_hsm_status(self) -> bool:
+        if not self.config.hsm_enabled:
+            print("  SKIPPED")
+            return True
+        if self.hsm_manager and self.hsm_manager.is_connected():
+            print("  ✓ Nitrokey HSM connected and authenticated")
+            keys = self.hsm_manager.list_keys()
+            if keys:
+                print(f"  ✓ {len(keys)} keys available")
+        elif self.config.hsm_required:
+            print("  ✗ HSM required but not connected")
+            sys.exit(1)
+        else:
+            print("  ⚠ HSM not connected (running without hardware security)")
+        return True
 
-        # 1. Startup checks
-        print("\n[1/8] Startup security checks...")
+    def _step_startup_checks(self) -> bool:
         ok, issues = self.startup.verify_all()
         for i in issues:
             print(f"  {'✗' if 'CRITICAL' in i else '⚠'} {i}")
@@ -657,68 +680,66 @@ class UnifiedSecureProxy:
             print("\n❌ FAILED")
             sys.exit(1)
         print("  ✓ Passed")
+        return True
 
-        # 2. Policy integrity (software)
-        print("\n[2/8] Policy integrity (software hash)...")
+    def _step_policy_hash(self) -> bool:
         if not self.integrity.verify_policy():
             print("  ✗ FAILED")
             sys.exit(1)
         print("  ✓ Hash verified")
+        return True
 
-        # 3. Policy HSM signature
-        if self.config.hsm_enabled:
-            print("\n[3/8] Policy integrity (HSM signature)...")
-            if not self._verify_policy_with_hsm():
-                if self.config.hsm_required:
-                    print("\n❌ HSM POLICY VERIFICATION FAILED")
-                    sys.exit(1)
-        else:
-            print("\n[3/8] Policy HSM verification... SKIPPED")
+    def _step_policy_hsm(self) -> bool:
+        if not self.config.hsm_enabled:
+            print("  SKIPPED")
+            return True
+        if not self._verify_policy_with_hsm():
+            if self.config.hsm_required:
+                print("\n❌ HSM POLICY VERIFICATION FAILED")
+                sys.exit(1)
+        return True
 
-        # 4. Network
-        print("\n[4/8] Network interceptor...")
+    def _step_network(self) -> bool:
         self.network.install_hooks()
         print("  ✓ Hooks active (including DoH blocking)")
+        return True
 
-        # 5. Integrity monitoring
-        print("\n[5/8] Integrity monitoring...")
+    def _step_integrity_monitor(self) -> bool:
         self.integrity.start_monitoring()
         print("  ✓ Active (10s interval)")
-
         if self.hsm_manager:
             self._start_hsm_monitor()
             print("  ✓ HSM health monitor active (30s interval)")
+        return True
 
-        # 6. FIDO2/WebAuthn system
-        if self.config.fido2_enabled:
-            print("\n[6/8] FIDO2/WebAuthn approval system...")
-            if self.fido2_server:
-                users = self.fido2_server.credential_store.get_all_users()
-                total_creds = sum(len(u.credentials) for u in users.values())
-                print(f"  ✓ {len(users)} users, {total_creds} devices registered")
-                if self.config.fido2_auto_start_server:
-                    self._start_approval_server()
-                    try:
-                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        s.connect(("8.8.8.8", 80))
-                        local_ip = s.getsockname()[0]
-                        s.close()
-                    except Exception:
-                        local_ip = "localhost"
-                    print(f"  ✓ Approval URL: "
-                          f"https://{local_ip}:{self.config.fido2_server_port}")
-                    if not users:
-                        print(f"  ⚠ No users registered. Visit "
-                              f"https://{local_ip}:"
-                              f"{self.config.fido2_server_port}/register")
-            else:
-                print("  ⚠ FIDO2 not initialized (missing dependencies?)")
+    def _step_fido2(self) -> bool:
+        if not self.config.fido2_enabled:
+            print("  SKIPPED")
+            return True
+        if self.fido2_server:
+            users = self.fido2_server.credential_store.get_all_users()
+            total_creds = sum(len(u.credentials) for u in users.values())
+            print(f"  ✓ {len(users)} users, {total_creds} devices registered")
+            if self.config.fido2_auto_start_server:
+                self._start_approval_server()
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                except Exception:
+                    local_ip = "localhost"
+                print(f"  ✓ Approval URL: "
+                      f"https://{local_ip}:{self.config.fido2_server_port}")
+                if not users:
+                    print(f"  ⚠ No users registered. Visit "
+                          f"https://{local_ip}:"
+                          f"{self.config.fido2_server_port}/register")
         else:
-            print("\n[6/8] FIDO2 approval system... SKIPPED")
+            print("  ⚠ FIDO2 not initialized (missing dependencies?)")
+        return True
 
-        # 7. Configure handler
-        print("\n[7/8] Configuring request handler...")
-
+    def _step_configure_handler(self) -> bool:
         transparency_tracker = None
         credential_redactor = None
         sensitive_detector = None
@@ -730,31 +751,32 @@ class UnifiedSecureProxy:
             sensitive_detector = SensitiveOperationDetector()
             self.executor.transparency = transparency_tracker
 
-        UnifiedProxyHandler.config = self.config
-        UnifiedProxyHandler.logger = self.logger
-        UnifiedProxyHandler.alerts = self.alerts
-        UnifiedProxyHandler.sanitizer = self.sanitizer
-        UnifiedProxyHandler.executor = self.executor
-        UnifiedProxyHandler.approval_mgr = self.approval_mgr
-        UnifiedProxyHandler.security_policy = self.policy
-        UnifiedProxyHandler.agentic_instructions = AGENTIC_INSTRUCTIONS
-        UnifiedProxyHandler.dual_verifier = self.dual_verifier
-        UnifiedProxyHandler.pii_protector = self.pii_protector
-        UnifiedProxyHandler.transparency_tracker = transparency_tracker
-        UnifiedProxyHandler.credential_redactor = credential_redactor
-        UnifiedProxyHandler.sensitive_detector = sensitive_detector
-        UnifiedProxyHandler.hsm_manager = self.hsm_manager
-        UnifiedProxyHandler.fido2_client = self.fido2_client
-        UnifiedProxyHandler.fido2_server = self.fido2_server
-        UnifiedProxyHandler.api_query_executor = self.api_query_executor
-        UnifiedProxyHandler.graph_api_registry = self.graph_api_registry
-        UnifiedProxyHandler.integrity_verifier = self.integrity
-        UnifiedProxyHandler.ollama_breaker = OllamaCircuitBreaker()
+        UnifiedProxyHandler.ctx = HandlerContext(
+            config=self.config,
+            logger=self.logger,
+            alerts=self.alerts,
+            sanitizer=self.sanitizer,
+            executor=self.executor,
+            approval_mgr=self.approval_mgr,
+            security_policy=self.policy,
+            agentic_instructions=AGENTIC_INSTRUCTIONS,
+            dual_verifier=self.dual_verifier,
+            pii_protector=self.pii_protector,
+            transparency_tracker=transparency_tracker,
+            credential_redactor=credential_redactor,
+            sensitive_detector=sensitive_detector,
+            hsm_manager=self.hsm_manager,
+            fido2_client=self.fido2_client,
+            fido2_server=self.fido2_server,
+            api_query_executor=self.api_query_executor,
+            graph_api_registry=self.graph_api_registry,
+            integrity_verifier=self.integrity,
+            ollama_breaker=OllamaCircuitBreaker(),
+        )
         print("  ✓ Configured")
+        return True
 
-        # 8. Start server
-        print("\n[8/8] Starting HTTP proxy server...")
-
+    def _step_start_server(self) -> bool:
         addr = (self.config.listen_host, self.config.listen_port)
 
         try:
@@ -783,6 +805,7 @@ class UnifiedSecureProxy:
             if self.hsm_manager:
                 self.hsm_manager.logout()
             self.logger.log_event("PROXY_STOPPED", AlertSeverity.INFO, {})
+        return True
 
 
 # =============================================================================
@@ -926,7 +949,27 @@ def main():
         config.hsm_required = False
     if args.hsm_mock:
         config.hsm_use_mock = True
+
+    # S3 FIX: HSM PIN handling — environment variable and interactive prompt
+    # Priority 1: Environment variable (for scripted/service use)
+    hsm_pin_env = os.environ.get('AIOHAI_HSM_PIN')
+    if hsm_pin_env:
+        config.hsm_pin = hsm_pin_env
+    # Priority 2: Interactive prompt (for manual startup)
+    elif config.hsm_enabled and not args.no_hsm and not args.hsm_pin and sys.stdin.isatty():
+        import getpass
+        try:
+            pin = getpass.getpass("HSM PIN (or Enter to skip): ")
+            if pin:
+                config.hsm_pin = pin
+        except (EOFError, KeyboardInterrupt):
+            pass
+    # Priority 3: CLI argument (deprecated, warn)
     if args.hsm_pin:
+        print("⚠️  WARNING: --hsm-pin on command line is insecure "
+              "(visible in ps/history).")
+        print("   Use AIOHAI_HSM_PIN environment variable or "
+              "interactive prompt instead.")
         config.hsm_pin = args.hsm_pin
 
     if args.no_fido2:

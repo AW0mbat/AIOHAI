@@ -23,41 +23,58 @@ from aiohai.core.patterns import OFFICE_SCANNABLE_EXTENSIONS
 from aiohai.core.templates import HELP_TEXT
 from aiohai.proxy.action_parser import ActionParser
 
-__all__ = ['UnifiedProxyHandler']
+__all__ = ['UnifiedProxyHandler', 'HandlerContext']
+
+
+class HandlerContext:
+    """O3: Bundles all handler dependencies into a single object.
+
+    Instead of 20 class-level attributes on UnifiedProxyHandler,
+    the orchestrator creates one HandlerContext and wires it once.
+    """
+    __slots__ = (
+        'config', 'logger', 'alerts', 'sanitizer', 'executor',
+        'approval_mgr', 'security_policy', 'agentic_instructions',
+        'dual_verifier', 'pii_protector', 'transparency_tracker',
+        'credential_redactor', 'sensitive_detector',
+        'api_query_executor', 'graph_api_registry', 'ollama_breaker',
+        'hsm_manager', 'fido2_client', 'fido2_server', 'integrity_verifier',
+    )
+
+    def __init__(self, **kwargs):
+        for slot in self.__slots__:
+            setattr(self, slot, kwargs.get(slot))
 
 
 class UnifiedProxyHandler(BaseHTTPRequestHandler):
     """HTTP handler with full security integration and transparency."""
 
-    # Class-level attributes wired by UnifiedSecureProxy.start()
-    config = None
-    logger = None
-    alerts = None
-    sanitizer = None
-    executor = None
-    approval_mgr = None
-    security_policy: str = ""
-    agentic_instructions: str = ""
-    dual_verifier = None
-    pii_protector = None
-    transparency_tracker = None
-    credential_redactor = None
-    sensitive_detector = None
-    api_query_executor = None
-    graph_api_registry = None
-    ollama_breaker = None
-    hsm_manager = None
-    fido2_client = None
-    fido2_server = None
-    integrity_verifier = None
+    # S4 FIX: Configurable size caps to prevent memory exhaustion
+    MAX_REQUEST_BODY = 10 * 1024 * 1024   # 10MB
+    MAX_RESPONSE_BODY = 50 * 1024 * 1024  # 50MB (models can be verbose)
+
+    # O3: All handler dependencies bundled in a single context object.
+    # Wired once by UnifiedSecureProxy.start() via HandlerContext.
+    ctx = None
+
+    # O2 FIX: Dispatch table mapping action types to executor methods.
+    # API_QUERY is excluded — it has its own sub-dispatch logic.
+    # Each entry: (executor_method_name, uses_content, label_func)
+    _ACTION_DISPATCH = {
+        'COMMAND': ('execute_command', False),
+        'READ':    ('read_file',       False),
+        'WRITE':   ('write_file',      True),
+        'LIST':    ('list_directory',   False),
+        'DELETE':  ('delete_file',     False),
+    }
 
     def log_message(self, format, *args):
         pass  # Suppress default logging
 
     def do_GET(self):
         # Block all requests if policy tampering detected
-        if hasattr(self, 'integrity_verifier') and self.integrity_verifier \
-                and self.integrity_verifier.is_locked_down:
+        if hasattr(self, 'integrity_verifier') and self.ctx.integrity_verifier \
+                and self.ctx.integrity_verifier.is_locked_down:
             self.send_response(503)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -70,8 +87,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # Block all requests if policy tampering detected
-        if hasattr(self, 'integrity_verifier') and self.integrity_verifier \
-                and self.integrity_verifier.is_locked_down:
+        if hasattr(self, 'integrity_verifier') and self.ctx.integrity_verifier \
+                and self.ctx.integrity_verifier.is_locked_down:
             self.send_response(503)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -88,8 +105,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         # Block all requests if policy tampering detected
-        if hasattr(self, 'integrity_verifier') and self.integrity_verifier \
-                and self.integrity_verifier.is_locked_down:
+        if hasattr(self, 'integrity_verifier') and self.ctx.integrity_verifier \
+                and self.ctx.integrity_verifier.is_locked_down:
             self.send_response(503)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -102,6 +119,13 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _handle_chat(self):
         content_length = int(self.headers.get('Content-Length', 0))
+        # S4 FIX: Reject oversized request bodies
+        if content_length > self.MAX_REQUEST_BODY:
+            self._send_error(
+                413,
+                f"Request body too large ({content_length} bytes, "
+                f"max {self.MAX_REQUEST_BODY})")
+            return
         body = self.rfile.read(content_length) if content_length > 0 else b''
 
         try:
@@ -126,7 +150,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             return
 
         # Sanitize
-        sanitized, warnings, trust = self.sanitizer.sanitize(user_message, "user")
+        sanitized, warnings, trust = self.ctx.sanitizer.sanitize(user_message, "user")
 
         # Update message
         if 'prompt' in data:
@@ -135,7 +159,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             data['messages'][-1]['content'] = sanitized
 
         # Inject system prompt
-        combined = self.security_policy + "\n\n" + self.agentic_instructions
+        combined = self.ctx.security_policy + "\n\n" + self.ctx.agentic_instructions
         if 'system' in data:
             data['system'] = combined + "\n\n---\n\n" + data['system']
         else:
@@ -155,10 +179,10 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             ai_text = response['message'].get('content', '')
 
         # Check PII in response
-        if self.pii_protector:
-            pii_check = self.pii_protector.check_response_for_pii(ai_text)
+        if self.ctx.pii_protector:
+            pii_check = self.ctx.pii_protector.check_response_for_pii(ai_text)
             if pii_check['should_block']:
-                self.logger.log_event("PII_IN_RESPONSE", AlertSeverity.HIGH,
+                self.ctx.logger.log_event("PII_IN_RESPONSE", AlertSeverity.HIGH,
                                      {'types': pii_check['pii_types']})
                 ai_text += ("\n\n⚠️ **Warning:** This response may contain "
                             "sensitive information.")
@@ -180,8 +204,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         # CONFIRM ALL - but not for destructive actions
         if m == 'CONFIRM ALL':
             # Check for destructive actions first
-            if self.approval_mgr.has_destructive_pending():
-                destructive = self.approval_mgr.get_destructive_pending()
+            if self.ctx.approval_mgr.has_destructive_pending():
+                destructive = self.ctx.approval_mgr.get_destructive_pending()
                 lines = ["⚠️ **Cannot batch-approve DELETE actions for safety.**\n"]
                 lines.append(
                     "The following DELETE action(s) must be confirmed individually:\n")
@@ -201,27 +225,27 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
         # REJECT ALL
         if m == 'REJECT ALL':
-            count = self.approval_mgr.clear_all()
+            count = self.ctx.approval_mgr.clear_all()
             if count == 0:
                 return "✅ No pending actions to reject."
-            if self.transparency_tracker:
-                self.transparency_tracker.record_approval(False)
+            if self.ctx.transparency_tracker:
+                self.ctx.transparency_tracker.record_approval(False)
             return f"❌ Rejected and cleared **{count}** pending action(s)."
 
         # CONFIRM single
         match = re.match(r'^CONFIRM\s+([A-Fa-f0-9]+)$', m)
         if match:
-            if self.transparency_tracker:
-                self.transparency_tracker.record_approval(True)
+            if self.ctx.transparency_tracker:
+                self.ctx.transparency_tracker.record_approval(True)
             return self._execute_approved(match.group(1).lower())
 
         # REJECT single
         match = re.match(r'^REJECT\s+([A-Fa-f0-9]+)$', m)
         if match:
             aid = match.group(1).lower()
-            if self.approval_mgr.reject(aid):
-                if self.transparency_tracker:
-                    self.transparency_tracker.record_approval(False)
+            if self.ctx.approval_mgr.reject(aid):
+                if self.ctx.transparency_tracker:
+                    self.ctx.transparency_tracker.record_approval(False)
                 return f"❌ Action `{aid}` rejected."
             return f"⚠️ No action: `{aid}`"
 
@@ -232,13 +256,13 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
         # REPORT - transparency report
         if m == 'REPORT':
-            if self.transparency_tracker:
-                return self.transparency_tracker.generate_report()
+            if self.ctx.transparency_tracker:
+                return self.ctx.transparency_tracker.generate_report()
             return "ℹ️ Transparency tracking not enabled for this session."
 
         # PENDING
         if m == 'PENDING':
-            pending = self.approval_mgr.get_all_pending()
+            pending = self.ctx.approval_mgr.get_all_pending()
             if not pending:
                 return "✅ No pending actions."
             lines = ["**Pending Actions:**\n"]
@@ -263,17 +287,17 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
         # STOP
         if m in ['STOP', 'ABORT', 'HALT', 'EMERGENCY STOP']:
-            count = self.approval_mgr.clear_all()
-            self.alerts.alert(AlertSeverity.WARNING, "EMERGENCY_STOP",
+            count = self.ctx.approval_mgr.clear_all()
+            self.ctx.alerts.alert(AlertSeverity.WARNING, "EMERGENCY_STOP",
                               f"Cleared {count}")
             return f"🛑 **EMERGENCY STOP** — Cleared {count} action(s)."
 
         # STATUS
         if m == 'STATUS':
-            pending_count = len(self.approval_mgr.get_all_pending())
+            pending_count = len(self.ctx.approval_mgr.get_all_pending())
             stats = {
-                'session': self.logger.session_id[:8],
-                'blocked': self.logger.stats.get('blocked', 0),
+                'session': self.ctx.logger.session_id[:8],
+                'blocked': self.ctx.logger.stats.get('blocked', 0),
                 'pending': pending_count,
             }
             return (f"**System Status:**\n```json\n"
@@ -287,7 +311,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _explain_action(self, approval_id: str) -> str:
         """Provide detailed explanation of a pending action."""
-        pending = self.approval_mgr.get_all_pending()
+        pending = self.ctx.approval_mgr.get_all_pending()
 
         # Find matching action
         found_action = None
@@ -317,8 +341,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         # Content preview (redacted)
         if found_action.get('content'):
             content = found_action['content']
-            if self.credential_redactor:
-                preview = self.credential_redactor.redact_for_preview(content, 200)
+            if self.ctx.credential_redactor:
+                preview = self.ctx.credential_redactor.redact_for_preview(content, 200)
             else:
                 preview = content[:200] + ('...' if len(content) > 200 else '')
             lines.append(f"\n### Content Preview (credentials redacted)")
@@ -357,7 +381,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _execute_all_pending(self, skip_destructive: bool = False) -> str:
         """Execute all pending actions in sequence, optionally skipping destructive."""
-        pending = self.approval_mgr.get_all_pending()
+        pending = self.ctx.approval_mgr.get_all_pending()
 
         if not pending:
             return "✅ No pending actions to execute."
@@ -406,67 +430,29 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             content = action['content']
 
             # Remove from pending
-            self.approval_mgr.reject(aid)
+            self.ctx.approval_mgr.reject(aid)
 
-            # Execute based on type
-            if atype == 'COMMAND':
-                ok, out = self.executor.execute_command(target)
-                status = "✅" if ok else "❌"
-                cmd_preview = target[:40] + ('...' if len(target) > 40 else '')
-                results.append(
-                    f"{status} `{short_id}` **COMMAND** — `{cmd_preview}`")
-                if not ok:
-                    results.append(f"   Error: {out[:100]}")
-                    fail_count += 1
-                else:
-                    success_count += 1
+            # O2: Dispatch via table
+            dispatch = self._ACTION_DISPATCH.get(atype)
+            if dispatch:
+                method_name, uses_content = dispatch
+                method = getattr(self.ctx.executor, method_name)
+                ok, out = method(target, content) if uses_content else method(target)
 
-            elif atype == 'READ':
-                ok, out = self.executor.read_file(target)
+                label = (target[:40] + ('...' if len(target) > 40 else '')
+                         if atype == 'COMMAND'
+                         else os.path.basename(target) or target)
                 status = "✅" if ok else "❌"
-                results.append(
-                    f"{status} `{short_id}` **READ** — "
-                    f"`{os.path.basename(target)}`")
+                results.append(f"{status} `{short_id}` **{atype}** — `{label}`")
                 if ok:
                     success_count += 1
                 else:
+                    if out:
+                        results.append(f"   Error: {out[:100]}")
                     fail_count += 1
-
-            elif atype == 'WRITE':
-                ok, out = self.executor.write_file(target, content)
-                status = "✅" if ok else "❌"
-                results.append(
-                    f"{status} `{short_id}` **WRITE** — "
-                    f"`{os.path.basename(target)}`")
-                if ok:
-                    success_count += 1
-                else:
-                    results.append(f"   Error: {out[:100]}")
-                    fail_count += 1
-
-            elif atype == 'LIST':
-                ok, out = self.executor.list_directory(target)
-                status = "✅" if ok else "❌"
-                results.append(
-                    f"{status} `{short_id}` **LIST** — "
-                    f"`{os.path.basename(target) or target}`")
-                if ok:
-                    success_count += 1
-                else:
-                    fail_count += 1
-
-            elif atype == 'DELETE':
-                # This should only execute if skip_destructive is False
-                ok, out = self.executor.delete_file(target)
-                status = "✅" if ok else "❌"
-                results.append(
-                    f"{status} `{short_id}` **DELETE** — "
-                    f"`{os.path.basename(target)}`")
-                if ok:
-                    success_count += 1
-                else:
-                    results.append(f"   Error: {out[:100]}")
-                    fail_count += 1
+            else:
+                results.append(f"⚠️ `{short_id}` Unknown type: {atype}")
+                fail_count += 1
 
         results.append(
             f"\n**Complete:** {success_count} succeeded, {fail_count} failed")
@@ -480,7 +466,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             (True, "") if hardware approval granted
             (False, user_message) if denied, timed out, or unavailable
         """
-        fido2 = getattr(self, 'fido2_client', None)
+        fido2 = getattr(self.ctx, 'fido2_client', None)
         if fido2 is None:
             # FIDO2 not available — fail closed, never fall through to chat approval
             return False, (
@@ -515,13 +501,13 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             request_id = req.get('request_id', '')
             approval_url = req.get('approval_url', '')
 
-            self.logger.log_event("FIDO2_REQUESTED", AlertSeverity.INFO, {
+            self.ctx.logger.log_event("FIDO2_REQUESTED", AlertSeverity.INFO, {
                 'action_type': atype, 'target': target[:200],
                 'request_id': request_id[:16],
             })
 
             # Poll until approved, rejected, or timeout
-            timeout = getattr(self.config, 'fido2_poll_timeout', 300)
+            timeout = getattr(self.ctx.config, 'fido2_poll_timeout', 300)
             result = fido2.wait_for_approval(
                 request_id,
                 timeout_seconds=timeout,
@@ -531,7 +517,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             status = result.get('status', 'unknown')
 
             if status == 'approved':
-                self.logger.log_event("FIDO2_APPROVED", AlertSeverity.INFO, {
+                self.ctx.logger.log_event("FIDO2_APPROVED", AlertSeverity.INFO, {
                     'action_type': atype, 'target': target[:200],
                     'approved_by': result.get('approved_by', 'unknown'),
                     'authenticator': result.get('authenticator_used', 'unknown'),
@@ -539,14 +525,14 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 return True, ""
 
             elif status == 'rejected':
-                self.logger.log_event("FIDO2_REJECTED", AlertSeverity.WARNING, {
+                self.ctx.logger.log_event("FIDO2_REJECTED", AlertSeverity.WARNING, {
                     'action_type': atype, 'target': target[:200],
                 })
                 return False, ("❌ Hardware approval **rejected**. "
                                "Action will not execute.")
 
             else:  # expired, timeout, error
-                self.logger.log_event("FIDO2_TIMEOUT", AlertSeverity.WARNING, {
+                self.ctx.logger.log_event("FIDO2_TIMEOUT", AlertSeverity.WARNING, {
                     'action_type': atype, 'target': target[:200],
                     'status': status,
                 })
@@ -556,7 +542,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 )
 
         except Exception as e:
-            self.logger.log_event("FIDO2_ERROR", AlertSeverity.HIGH, {
+            self.ctx.logger.log_event("FIDO2_ERROR", AlertSeverity.HIGH, {
                 'action_type': atype, 'target': target[:200],
                 'error': str(e),
             })
@@ -564,8 +550,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                            f"Action will not execute.")
 
     def _execute_approved(self, aid: str) -> str:
-        action = self.approval_mgr.approve(aid,
-                                            session_id=self.logger.session_id)
+        action = self.ctx.approval_mgr.approve(aid,
+                                            session_id=self.ctx.logger.session_id)
         if not action:
             return f"⚠️ No action: `{aid}` (expired?)"
 
@@ -580,11 +566,11 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 return message
 
         # Dual LLM verification
-        if self.dual_verifier and self.config.enable_dual_llm:
-            result = self.dual_verifier.verify_action(
+        if self.ctx.dual_verifier and self.ctx.config.enable_dual_llm:
+            result = self.ctx.dual_verifier.verify_action(
                 atype, target, content, "user request")
             if result.verdict == Verdict.BLOCKED:
-                self.logger.log_blocked("DUAL_LLM", target, result.reasoning)
+                self.ctx.logger.log_blocked("DUAL_LLM", target, result.reasoning)
                 return (f"❌ Blocked by security verification:\n"
                         f"{result.reasoning}")
             elif result.verdict == Verdict.DANGEROUS:
@@ -592,25 +578,29 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                         f"Concerns: {', '.join(result.concerns)}\n\n"
                         f"Type `FORCE {aid}` to proceed anyway.")
 
-        if atype == 'COMMAND':
-            ok, out = self.executor.execute_command(target)
-            return f"**Command Result:**\n```\n{out}\n```"
-        elif atype == 'READ':
-            ok, out = self.executor.read_file(target)
-            return (f"**File `{target}`:**\n```\n{out}\n```" if ok else out)
-        elif atype == 'WRITE':
-            ok, out = self.executor.write_file(target, content)
-            return out
-        elif atype == 'LIST':
-            ok, out = self.executor.list_directory(target)
-            return out
-        elif atype == 'DELETE':
-            ok, out = self.executor.delete_file(target)
-            return out
-        elif atype == 'API_QUERY':
+        # O2: Dispatch via table (API_QUERY handled separately)
+        if atype == 'API_QUERY':
             return self._execute_api_query(action)
 
+        dispatch = self._ACTION_DISPATCH.get(atype)
+        if dispatch:
+            method_name, uses_content = dispatch
+            method = getattr(self.ctx.executor, method_name)
+            ok, out = method(target, content) if uses_content else method(target)
+            return self._format_single_result(atype, target, ok, out)
+
         return f"⚠️ Unknown: {atype}"
+
+    def _format_single_result(self, atype: str, target: str,
+                              ok: bool, out: str) -> str:
+        """Format the result of a single approved action execution."""
+        if atype == 'COMMAND':
+            return f"**Command Result:**\n```\n{out}\n```"
+        elif atype == 'READ':
+            return (f"**File `{target}`:**\n```\n{out}\n```" if ok else out)
+        else:
+            # WRITE, LIST, DELETE all return their output directly
+            return out
 
     def _execute_api_query(self, action: dict) -> str:
         """Execute an API_QUERY action against local services or Graph API."""
@@ -626,7 +616,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _execute_graph_api_query(self, target: str, method: str) -> str:
         """Execute a Graph API query."""
-        if not self.graph_api_registry:
+        if not self.ctx.graph_api_registry:
             return "❌ Graph API is not configured."
 
         # Re-validate (defense in depth)
@@ -636,10 +626,10 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         elif '/beta' in graph_path:
             graph_path = graph_path.split('/beta', 1)[-1]
 
-        allowed, tier_or_reason, _ = self.graph_api_registry.validate_request(
+        allowed, tier_or_reason, _ = self.ctx.graph_api_registry.validate_request(
             method, graph_path)
         if not allowed:
-            self.logger.log_blocked("API_QUERY_GRAPH", target, tier_or_reason)
+            self.ctx.logger.log_blocked("API_QUERY_GRAPH", target, tier_or_reason)
             return f"❌ Graph API blocked: {tier_or_reason}"
 
         try:
@@ -648,27 +638,27 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read(10 * 1024 * 1024)  # 10MB cap
                 text = data.decode('utf-8', errors='replace')
-                if self.pii_protector:
-                    text = self.pii_protector.redact_for_logging(text)
-                self.logger.log_action("API_QUERY", target, "SUCCESS",
+                if self.ctx.pii_protector:
+                    text = self.ctx.pii_protector.redact_for_logging(text)
+                self.ctx.logger.log_action("API_QUERY", target, "SUCCESS",
                                        {'service': 'graph_api', 'bytes': len(data)})
-                if self.transparency_tracker:
-                    self.transparency_tracker.record_api_query(
+                if self.ctx.transparency_tracker:
+                    self.ctx.transparency_tracker.record_api_query(
                         'graph_api', target, success=True)
                 return f"**Graph API Response:**\n```json\n{text}\n```"
         except Exception as e:
-            self.logger.log_action("API_QUERY", target, "ERROR",
+            self.ctx.logger.log_action("API_QUERY", target, "ERROR",
                                    {'error': str(e)})
-            if self.transparency_tracker:
-                self.transparency_tracker.record_api_query(
+            if self.ctx.transparency_tracker:
+                self.ctx.transparency_tracker.record_api_query(
                     'graph_api', target, success=False)
             return f"❌ Graph API error: {e}"
 
     def _execute_local_api_query(self, target: str, method: str) -> str:
         """Execute a local service API query."""
-        if not self.api_query_executor:
+        if not self.ctx.api_query_executor:
             return "❌ Local API query executor is not available."
-        ok, result = self.api_query_executor.execute(target, method=method)
+        ok, result = self.ctx.api_query_executor.execute(target, method=method)
         if ok:
             return f"**API Response:**\n```\n{result}\n```"
         else:
@@ -700,9 +690,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 lines.extend(lines_to_add)
 
             elif atype == 'COMMAND' and target:
-                is_safe, reason = self.executor.command_validator.validate(target)
+                is_safe, reason = self.ctx.executor.command_validator.validate(target)
                 if not is_safe:
-                    self.logger.log_blocked("PRE_APPROVAL_COMMAND", target, reason)
+                    self.ctx.logger.log_blocked("PRE_APPROVAL_COMMAND", target, reason)
                     lines.append(
                         f"\n\n---\n### 🚫 Blocked: COMMAND"
                         f"\n\nCommand rejected by security policy: **{reason}**"
@@ -724,9 +714,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             # ----- Create approval request -----
             try:
                 # H-5 FIX: Always pass session_id to enforce session binding
-                aid = self.approval_mgr.create_request(
+                aid = self.ctx.approval_mgr.create_request(
                     atype, target, content,
-                    session_id=self.logger.session_id
+                    session_id=self.ctx.logger.session_id
                 )
             except Exception as e:
                 lines.append(f"\n\n---\n### 🚫 Action Blocked\n\n{str(e)}")
@@ -734,9 +724,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
             # Tag the pending approval with tier-3 if needed
             if tier3_required:
-                with self.approval_mgr.lock:
-                    if aid in self.approval_mgr.pending:
-                        self.approval_mgr.pending[aid]['tier3_required'] = True
+                with self.ctx.approval_mgr.lock:
+                    if aid in self.ctx.approval_mgr.pending:
+                        self.ctx.approval_mgr.pending[aid]['tier3_required'] = True
 
             short_id = aid[:8]
             action_ids.append((short_id, atype, target))
@@ -783,9 +773,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         Returns None if blocked (caller should skip this action).
         Returns (tier3_required, extra_lines) if valid.
         """
-        is_safe, resolved, reason = self.executor.path_validator.validate(target)
+        is_safe, resolved, reason = self.ctx.executor.path_validator.validate(target)
         if not is_safe:
-            self.logger.log_blocked(f"PRE_APPROVAL_{atype}", target, reason)
+            self.ctx.logger.log_blocked(f"PRE_APPROVAL_{atype}", target, reason)
             # Return None to signal blocked - but we need to communicate the line
             # Use a side-effect pattern matching the monolith
             return None  # Caller checks for None
@@ -794,26 +784,26 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         tier3_required = (reason == "Tier 3 required")
 
         # GAP 8 FIX: Block macro-enabled extensions at pre-approval
-        if atype == 'WRITE' and self.executor.macro_blocker:
-            ext_ok, ext_reason = self.executor.macro_blocker.check_extension(target)
+        if atype == 'WRITE' and self.ctx.executor.macro_blocker:
+            ext_ok, ext_reason = self.ctx.executor.macro_blocker.check_extension(target)
             if not ext_ok:
-                self.logger.log_blocked("PRE_APPROVAL_MACRO", target, ext_reason)
+                self.ctx.logger.log_blocked("PRE_APPROVAL_MACRO", target, ext_reason)
                 return None
 
         # GAP 7 FIX: PII pre-scan for Office documents → TIER 3 escalation
         target_ext = os.path.splitext(target)[1].lower()
         if (atype == 'WRITE' and target_ext in OFFICE_SCANNABLE_EXTENSIONS
-                and self.executor.doc_scanner and content):
-            pre_scan = self.executor.doc_scanner.scan(
+                and self.ctx.executor.doc_scanner and content):
+            pre_scan = self.ctx.executor.doc_scanner.scan(
                 content, file_type=target_ext,
                 filename=os.path.basename(target))
             if pre_scan.get('should_block'):
                 tier3_required = True
-                pii_summary = self.executor.doc_scanner.get_scan_summary(pre_scan)
+                pii_summary = self.ctx.executor.doc_scanner.get_scan_summary(pre_scan)
                 self._pending_pii_warning = pii_summary
             elif pre_scan.get('findings'):
                 self._pending_pii_warning = \
-                    self.executor.doc_scanner.get_scan_summary(pre_scan)
+                    self.ctx.executor.doc_scanner.get_scan_summary(pre_scan)
             else:
                 self._pending_pii_warning = None
         else:
@@ -829,8 +819,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         is_graph = target.lower().startswith('https://graph.microsoft.com')
 
         if is_graph:
-            if not self.graph_api_registry:
-                self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+            if not self.ctx.graph_api_registry:
+                self.ctx.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
                                         "Graph API not configured")
                 return None
 
@@ -842,21 +832,21 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 graph_path = graph_path.split('/beta', 1)[-1]
 
             allowed, tier_or_reason, _ = \
-                self.graph_api_registry.validate_request(method, graph_path)
+                self.ctx.graph_api_registry.validate_request(method, graph_path)
             if not allowed:
-                self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                self.ctx.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
                                         tier_or_reason)
                 return None
             tier3_required = (tier_or_reason == 'TIER_3')
         else:
-            if not self.api_query_executor:
-                self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+            if not self.ctx.api_query_executor:
+                self.ctx.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
                                         "Local API query executor not initialized")
                 return None
             is_valid, svc_or_reason = \
-                self.api_query_executor.registry.validate_request(target)
+                self.ctx.api_query_executor.registry.validate_request(target)
             if not is_valid:
-                self.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
+                self.ctx.logger.log_blocked("PRE_APPROVAL_API_QUERY", target,
                                         svc_or_reason)
                 return None
             tier3_required = False
@@ -869,11 +859,11 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         """Format a single action into a user-facing approval card."""
         # Check sensitivity
         sensitivity_warning = ""
-        if self.sensitive_detector:
-            matches = self.sensitive_detector.detect(target, content)
+        if self.ctx.sensitive_detector:
+            matches = self.ctx.sensitive_detector.detect(target, content)
             if matches:
                 sensitivity_warning = (
-                    f"\n\n{self.sensitive_detector.format_warning(matches)}")
+                    f"\n\n{self.ctx.sensitive_detector.format_warning(matches)}")
 
         confirm_line = (f"✅ `CONFIRM {short_id}` · ❌ `REJECT {short_id}` "
                         f"· ❓ `EXPLAIN {short_id}`")
@@ -934,16 +924,16 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _get_docker_tier(self, command: str) -> Optional[str]:
         """Determine the Docker command tier for display purposes."""
-        if (hasattr(self, 'executor') and self.executor and
-                self.executor.command_validator):
-            tier = self.executor.command_validator.get_docker_tier(command)
+        if (hasattr(self, 'executor') and self.ctx.executor and
+                self.ctx.executor.command_validator):
+            tier = self.ctx.executor.command_validator.get_docker_tier(command)
             return tier if tier != 'unknown' else None
         return None
 
     def _format_write_preview(self, target: str, content: str) -> str:
         """Format write action with credential-redacted preview."""
-        if self.credential_redactor:
-            preview = self.credential_redactor.redact_for_preview(content, 100)
+        if self.ctx.credential_redactor:
+            preview = self.ctx.credential_redactor.redact_for_preview(content, 100)
         else:
             preview = (content[:100].replace('\n', ' ')
                        + ('...' if len(content) > 100 else ''))
@@ -1023,43 +1013,52 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
     def _call_ollama(self, body: bytes) -> Optional[Dict]:
         # M-8 FIX: Check circuit breaker before attempting request
-        breaker = getattr(self.__class__, 'ollama_breaker', None)
+        breaker = getattr(self.ctx, 'ollama_breaker', None)
         if breaker and not breaker.can_request():
-            self.logger.log_event("OLLAMA_CIRCUIT_OPEN", AlertSeverity.WARNING,
+            self.ctx.logger.log_event("OLLAMA_CIRCUIT_OPEN", AlertSeverity.WARNING,
                                   {'reason': 'Circuit breaker open after '
                                              'consecutive failures'})
             return None
 
-        url = (f"http://{self.config.ollama_host}:{self.config.ollama_port}"
+        url = (f"http://{self.ctx.config.ollama_host}:{self.ctx.config.ollama_port}"
                f"{self.path}")
         try:
             req = urllib.request.Request(url, data=body, method='POST')
             req.add_header('Content-Type', 'application/json')
             with urllib.request.urlopen(req, timeout=300) as resp:
-                result = json.loads(resp.read())
+                # S4 FIX: Bound response read to prevent memory exhaustion
+                result = json.loads(resp.read(self.MAX_RESPONSE_BODY))
                 if breaker:
                     breaker.record_success()
                 return result
         except Exception as e:
             if breaker:
                 breaker.record_failure()
-            self.logger.log_event("OLLAMA_ERROR", AlertSeverity.HIGH,
+            self.ctx.logger.log_event("OLLAMA_ERROR", AlertSeverity.HIGH,
                                   {'error': str(e)})
             return None
 
     def _forward_request(self, method: str, body: bytes = None):
         if body is None:
             cl = int(self.headers.get('Content-Length', 0))
+            # S4 FIX: Bound body read in forwarded requests too
+            if cl > self.MAX_REQUEST_BODY:
+                self._send_error(
+                    413,
+                    f"Request body too large ({cl} bytes, "
+                    f"max {self.MAX_REQUEST_BODY})")
+                return
             body = self.rfile.read(cl) if cl > 0 else b''
 
-        url = (f"http://{self.config.ollama_host}:{self.config.ollama_port}"
+        url = (f"http://{self.ctx.config.ollama_host}:{self.ctx.config.ollama_port}"
                f"{self.path}")
         try:
             req = urllib.request.Request(
                 url, data=body if body else None, method=method)
             req.add_header('Content-Type', 'application/json')
             with urllib.request.urlopen(req, timeout=60) as resp:
-                data = resp.read()
+                # S4 FIX: Bound response read to prevent memory exhaustion
+                data = resp.read(self.MAX_RESPONSE_BODY)
                 self.send_response(resp.status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', len(data))

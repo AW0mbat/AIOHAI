@@ -193,7 +193,12 @@ class SmartHomeConfigAnalyzer:
                 return True
             # Also check without registry prefix (Docker Hub default)
             if '/' not in image or image.count('/') == 1:
-                if image_lower.startswith(trusted.lower().split('/')[-1]):
+                # C4 FIX: Require exact match on image name component
+                # to prevent "homeassistant-evil/malware" from matching
+                # the trusted "homeassistant" prefix.
+                trusted_name = trusted.lower().split('/')[-1]
+                image_name = image_lower.split('/')[0].split(':')[0]
+                if image_name == trusted_name:
                     return True
 
         return False

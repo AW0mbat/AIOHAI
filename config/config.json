@@ -47,8 +47,7 @@
         "enabled": true,
         "required": true,
         "use_mock": false,
-        "pin": "",
-        "_comment": "Nitrokey HSM 2 via PKCS#11. Set required=false or use --hsm-optional to start without hardware."
+        "_comment": "Nitrokey HSM 2 via PKCS#11. PIN provided via AIOHAI_HSM_PIN env var or --hsm-pin flag. Set required=false or use --hsm-optional to start without hardware."
     },
     "fido2": {
         "enabled": true,

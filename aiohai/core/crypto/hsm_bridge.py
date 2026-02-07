@@ -384,8 +384,10 @@ class NitrokeyHSMManager:
                 # Compute hash
                 data_hash = hashlib.sha256(data).digest()
                 
-                # Sign (RSA-PKCS or ECDSA)
-                mechanism = CKM_SHA256_RSA_PKCS  # or CKM_ECDSA_SHA256 for EC keys
+                # C1 FIX: Use CKM_RSA_PKCS (raw RSA) when passing pre-hashed data.
+                # CKM_SHA256_RSA_PKCS would hash again internally, producing a
+                # double-hash that isn't interoperable with standard tooling.
+                mechanism = CKM_RSA_PKCS
                 signature = bytes(self._session.sign(key, data_hash, mechanism))
                 
                 signature_b64 = base64.b64encode(signature).decode('ascii')
@@ -426,8 +428,9 @@ class NitrokeyHSMManager:
                 # Compute hash
                 data_hash = hashlib.sha256(data).digest()
                 
-                # Verify
-                mechanism = CKM_SHA256_RSA_PKCS
+                # C1 FIX: Use CKM_RSA_PKCS (raw RSA) to match sign_data().
+                # See sign_data() comment for rationale.
+                mechanism = CKM_RSA_PKCS
                 self._session.verify(key, data_hash, signature, mechanism)
                 
                 return True, "Signature valid."

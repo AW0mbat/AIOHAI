@@ -71,7 +71,10 @@ class ApprovalManager:
             sensitivity = self.sensitive_detector.detect(target, content)
 
         # Hash the content for integrity verification
-        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16] if content else ""
+        # C4 FIX: Include action_type and target in hash to prevent
+        # cross-action substitution attacks.
+        hash_input = f"{action_type}:{target}:{content}"
+        content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
 
         with self.lock:
             self.pending[approval_id] = {
@@ -126,7 +129,9 @@ class ApprovalManager:
 
             # Verify content integrity
             if action.get('content_hash'):
-                current_hash = hashlib.sha256(action['content'].encode()).hexdigest()[:16]
+                # C4 FIX: Recompute with same inputs as create_request()
+                hash_input = f"{action['type']}:{action['target']}:{action['content']}"
+                current_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
                 if not hmac.compare_digest(action['content_hash'], current_hash):
                     self.logger.log_event("APPROVAL_CONTENT_TAMPERED", AlertSeverity.CRITICAL,
                                          {'id': approval_id[:8]})

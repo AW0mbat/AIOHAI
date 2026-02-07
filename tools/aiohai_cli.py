@@ -168,7 +168,7 @@ def _read_log_tail(log_name: str, lines: int = 30) -> List[str]:
 
 
 def _hash_file(path: Path) -> str:
-    """SHA-256 hash of a file."""
+    """SHA-256 hash of a file. O5: Delegates to same algorithm as IntegrityVerifier."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(8192), b''):
@@ -1555,109 +1555,90 @@ def interactive_menu():
         input(f"\n  {Colors.dim('Press Enter to continue...')}")
 
 
-def _interactive_users():
-    print(f"""
-  {Colors.cyan('1')}  List users
-  {Colors.cyan('2')}  Add user
-  {Colors.cyan('3')}  Remove user
-  {Colors.cyan('4')}  Modify user
-""")
+def _interactive_dispatch(title: str, options: list):
+    """O5: Generic interactive sub-menu dispatcher.
+
+    Args:
+        title: Menu heading
+        options: List of (label, callable) tuples
+    """
+    print(f"\n  {Colors.bold(title)}")
+    for i, (label, _) in enumerate(options, 1):
+        print(f"  {Colors.cyan(str(i))}  {label}")
+    print()
     choice = input("  Choice: ").strip()
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(options):
+            options[idx][1]()
+        else:
+            print(f"  {WARN} Invalid choice")
+    except (ValueError, IndexError):
+        print(f"  {WARN} Invalid choice")
+
+
+def _interactive_users():
     store = _load_credential_store()
     if not store:
         print(f"  {FAIL} FIDO2 module not available")
         return
-    if choice == '1':
-        _users_list(store)
-    elif choice == '2':
-        _users_add(store)
-    elif choice == '3':
-        _users_remove(store, None)
-    elif choice == '4':
-        _users_modify(store, None)
+    _interactive_dispatch("Users", [
+        ("List users",   lambda: _users_list(store)),
+        ("Add user",     lambda: _users_add(store)),
+        ("Remove user",  lambda: _users_remove(store, None)),
+        ("Modify user",  lambda: _users_modify(store, None)),
+    ])
 
 
 def _interactive_devices():
-    print(f"""
-  {Colors.cyan('1')}  List devices
-  {Colors.cyan('2')}  Remove device
-""")
-    choice = input("  Choice: ").strip()
     store = _load_credential_store()
     if not store:
         print(f"  {FAIL} FIDO2 module not available")
         return
-    if choice == '1':
-        _devices_list(store)
-    elif choice == '2':
-        _devices_remove(store, None)
+    _interactive_dispatch("Devices", [
+        ("List devices",  lambda: _devices_list(store)),
+        ("Remove device", lambda: _devices_remove(store, None)),
+    ])
 
 
 def _interactive_hsm():
-    print(f"""
-  {Colors.cyan('1')}  HSM status
-  {Colors.cyan('2')}  Initialize HSM
-  {Colors.cyan('3')}  Sign policy
-  {Colors.cyan('4')}  Verify policy
-""")
-    choice = input("  Choice: ").strip()
-    if choice == '1':
-        _hsm_status()
-    elif choice == '2':
-        _hsm_init()
-    elif choice == '3':
-        _hsm_sign_policy()
-    elif choice == '4':
-        _hsm_verify_policy()
+    _interactive_dispatch("HSM", [
+        ("HSM status",     _hsm_status),
+        ("Initialize HSM", _hsm_init),
+        ("Sign policy",    _hsm_sign_policy),
+        ("Verify policy",  _hsm_verify_policy),
+    ])
 
 
 def _interactive_logs():
-    print(f"""
-  {Colors.cyan('1')}  Show log summary
-  {Colors.cyan('2')}  View specific log
-  {Colors.cyan('3')}  Audit log integrity
-  {Colors.cyan('4')}  Clear logs
-""")
-    choice = input("  Choice: ").strip()
-    if choice == '1':
-        _logs_show(argparse.Namespace())
-    elif choice == '2':
-        name = input("  Log file name: ").strip()
-        _logs_show(argparse.Namespace(log_file=name, lines=50))
-    elif choice == '3':
-        _logs_audit()
-    elif choice == '4':
-        _logs_clear()
+    _interactive_dispatch("Logs", [
+        ("Show log summary", lambda: _logs_show(argparse.Namespace())),
+        ("View specific log", lambda: _logs_show(
+            argparse.Namespace(log_file=input("  Log file name: ").strip(), lines=50))),
+        ("Audit log integrity", _logs_audit),
+        ("Clear logs",          _logs_clear),
+    ])
 
 
 def _interactive_config():
-    print(f"""
-  {Colors.cyan('1')}  Show configuration
-  {Colors.cyan('2')}  Change a setting
-  {Colors.cyan('3')}  Reset to defaults
-""")
-    choice = input("  Choice: ").strip()
-    if choice == '1':
-        _config_show()
-    elif choice == '2':
+    def _change_setting():
         key = input("  Setting (section.key): ").strip()
         value = input("  New value: ").strip()
         if key and value:
             _config_set(key, value)
-    elif choice == '3':
-        _config_reset()
+
+    _interactive_dispatch("Configuration", [
+        ("Show configuration", _config_show),
+        ("Change a setting",   _change_setting),
+        ("Reset to defaults",  _config_reset),
+    ])
 
 
 def _interactive_certs():
-    print(f"""
-  {Colors.cyan('1')}  Certificate status
-  {Colors.cyan('2')}  Generate new certificate
-""")
-    choice = input("  Choice: ").strip()
-    if choice == '1':
-        _certs_status()
-    elif choice == '2':
-        _certs_generate()
+    _interactive_dispatch("TLS Certificates", [
+        ("Certificate status",       _certs_status),
+        ("Generate new certificate", _certs_generate),
+    ])
 
 
 # =============================================================================
