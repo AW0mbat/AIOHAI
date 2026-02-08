@@ -1,6 +1,6 @@
 # AIOHAI — AI-Operated Home & Office Intelligence Proxy
 
-**Version 5.0.0** · Clean Layered Architecture for Local AI Agents
+**Version 5.1.0** · Security-Hardened Layered Architecture for Local AI Agents
 
 ---
 
@@ -41,19 +41,34 @@ The proxy was designed for a specific threat model: you're running a capable loc
 
 ---
 
-## What's New in v5.0.0
+## What's New in v5.1.0
 
-v5.0.0 completes the architectural transformation started in v4.0.0. All 35 classes have been extracted from the original monolithic files into the `aiohai/` package, and the legacy `proxy/` and `security/` directories have been removed entirely.
+v5.1.0 is a security-first maintenance release produced by a full code audit of the v5.0.0 codebase. It closes 5 security vulnerabilities, fixes 4 correctness bugs, and applies targeted structural optimization — all with zero behavior changes to intended functionality.
 
-**Key changes from v4.0.0:**
+**Security fixes:**
 
-- All code lives exclusively in `aiohai/` — no more monolith files or facade stubs
-- Single entry point: `python -m aiohai`
-- 42% reduction in total Python lines (~18,675 → ~10,865) through deduplication
-- All tests and tools import from canonical `aiohai.*` paths
-- Ghost framework entries removed from `ALLOWED_FRAMEWORK_NAMES`
+- FIDO2 server endpoints (`/api/pending`, `/api/users`) now require authentication — LAN clients can no longer enumerate pending operations or registered users
+- Admin FIDO2 registration gated after bootstrap — first user is admin, subsequent admin registrations require API secret authorization
+- HSM PIN no longer accepted via command-line argument by default — use `AIOHAI_HSM_PIN` environment variable or interactive prompt instead (`--hsm-pin` still works but prints a deprecation warning)
+- Request body size capped at 10 MB (returns HTTP 413), response reads capped at 50 MB
+- Dead `"pin"` field removed from `config.json` to prevent accidental plaintext PIN storage
 
-See `CHANGELOG_5.0.0.md` for migration details if upgrading from v4.0.0.
+**Correctness fixes:**
+
+- HSM signatures now use `CKM_RSA_PKCS` (no double-hash), making them interoperable with standard tooling
+- FIDO2 approval audit log now records the actual key used, not always the first registered key
+- Approval content hash includes action type and target, preventing cross-action substitution
+- Docker image matching uses exact name comparison instead of prefix matching
+
+**Structural optimization:**
+
+- Handler uses `HandlerContext` dataclass + `_ACTION_DISPATCH` table (replaces 20 class attributes and if/elif chains)
+- Orchestrator `start()` decomposed into individually testable `_step_*` methods
+- FIDO2 HTML templates extracted to `fido2_templates.py` (−122 lines from `fido_gate.py`)
+- CLI interactive menus consolidated via generic `_interactive_dispatch()`
+- `__init__.py` re-exports trimmed: 513 → 90 lines across 13 files
+
+See `CHANGELOG_5.1.0.md` for full details on all 15 steps.
 
 ---
 
@@ -61,8 +76,8 @@ See `CHANGELOG_5.0.0.md` for migration details if upgrading from v4.0.0.
 
 ```
 C:\AIOHAI\                          (or $AIOHAI_HOME)
-├── aiohai/                         All code (~10,865 lines)
-│   ├── __init__.py                 Package root (version 5.0.0)
+├── aiohai/                         All code (~10,350 lines, 65 files)
+│   ├── __init__.py                 Package root (version 5.1.0)
 │   ├── __main__.py                 Entry point: python -m aiohai
 │   ├── core/                       Layer 1: Trust Infrastructure
 │   │   ├── types.py                24 consolidated types (enums, dataclasses, exceptions)
@@ -72,7 +87,7 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 │   │   ├── templates.py            LLM instruction templates
 │   │   ├── config.py               UnifiedConfig
 │   │   ├── access/                 PathValidator, CommandValidator, SessionManager
-│   │   ├── crypto/                 HSM bridge, FIDO2 gate, credentials
+│   │   ├── crypto/                 HSM bridge, FIDO2 gate, credentials, fido2_templates
 │   │   ├── audit/                  Logger, integrity, transparency, alerts
 │   │   ├── analysis/               Sanitizer, PII, static analysis
 │   │   ├── network/                NetworkInterceptor
@@ -81,8 +96,8 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 │   │   ├── smart_home/             Home Assistant, Frigate (5 classes)
 │   │   └── office/                 Office, Graph API (6 classes)
 │   ├── proxy/                      Layer 3: AI Enforcement
-│   │   ├── orchestrator.py         UnifiedSecureProxy + main()
-│   │   ├── handler.py              UnifiedProxyHandler
+│   │   ├── orchestrator.py         UnifiedSecureProxy + main() (step-decomposed)
+│   │   ├── handler.py              UnifiedProxyHandler + HandlerContext
 │   │   ├── executor.py             SecureExecutor
 │   │   ├── action_parser.py        ActionParser
 │   │   ├── approval.py             ApprovalManager
@@ -103,9 +118,10 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 │   ├── test_e2e.py                 37 end-to-end pipeline tests
 │   ├── test_ha_framework.py        99 smart home framework tests
 │   ├── test_office_framework.py    155 Office framework tests
-│   └── test_extraction_verify_p7.py  Architecture verification tests
+│   ├── test_extraction_verify_p7.py  Architecture verification tests
+│   └── test_v510_optimization.py   46 v5.1.0 optimization tests
 ├── tools/
-│   ├── aiohai_cli.py               Management CLI
+│   ├── aiohai_cli.py               Management CLI (~1,776 lines)
 │   ├── register_devices.py         FIDO2 device registration wizard
 │   └── hsm_setup.py                HSM initialization tool
 ├── web/
@@ -134,8 +150,8 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
 | 5 | StaticSecurityAnalyzer + PIIProtector | Bandit-style analysis, PII/credential redaction |
 | 6 | ResourceLimiter | DoS protection (processes, file ops, session limits) |
 | 7 | PathValidator + CommandValidator | Blocks credential stores, obfuscation detection |
-| 8 | ApprovalManager + SecureExecutor | HMAC tokens, sandboxed execution |
-| 9 | Nitrokey HSM + FIDO2/WebAuthn | Hardware signing, physical key approval |
+| 8 | ApprovalManager + SecureExecutor | HMAC tokens, sandboxed execution, input size limits |
+| 9 | Nitrokey HSM + FIDO2/WebAuthn | Hardware signing, physical key approval, authenticated endpoints |
 | 10 | SessionTransparencyTracker + AlertManager | Action logging, desktop notifications |
 | 11 | OllamaCircuitBreaker | Prevents thread exhaustion |
 
@@ -156,7 +172,13 @@ C:\AIOHAI\                          (or $AIOHAI_HOME)
    python -m aiohai --no-hsm --no-fido2
 
    # Full (with Nitrokey HSM + FIDO2 key)
-   python -m aiohai --hsm-pin YOUR_PIN
+   # Recommended: use environment variable for PIN
+   export AIOHAI_HSM_PIN=YOUR_PIN    # Linux/Mac
+   $env:AIOHAI_HSM_PIN = "YOUR_PIN"  # PowerShell
+   python -m aiohai --hsm
+
+   # Or interactive prompt (will ask for PIN at startup)
+   python -m aiohai --hsm
    ```
 6. Point Open WebUI's `OLLAMA_BASE_URL` to `http://localhost:11435`
 7. Chat normally — the proxy intercepts and secures everything transparently
@@ -241,7 +263,18 @@ Primary: **Windows 10/11 Pro**. Linux partially supported (network interception 
 
 ## Version History
 
-### v5.0.0 (Current)
+### v5.1.0 (Current)
+
+**Security Hardening & Structural Optimization**
+
+- 5 security vulnerabilities closed (FIDO2 endpoint auth, admin registration gating, HSM PIN exposure, input bounds, dead config field)
+- 4 correctness bugs fixed (HSM double-hash, authenticator tracking, approval hash, Docker image matching)
+- Handler refactored: `HandlerContext` dataclass + `_ACTION_DISPATCH` table
+- Orchestrator `start()` decomposed into `_step_*` methods
+- `__init__.py` re-exports trimmed: 513 → 90 lines
+- 46 new tests covering all changes
+
+### v5.0.0
 
 **Clean Architecture — Monolith Fully Removed**
 
