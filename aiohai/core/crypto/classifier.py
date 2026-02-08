@@ -44,23 +44,32 @@ class OperationClassifier:
         r'(?i)customer.?list', r'(?i)client.?data', r'(?i)account',
     ]
 
+    # Action types explicitly classified as Tier 1 (auto-execute eligible)
+    TIER_1_OPS = {'LIST', 'READ', 'API_QUERY'}
+
+    # Action types explicitly classified as Tier 2 (software approval)
+    TIER_2_OPS = {'WRITE', 'COMMAND', 'DOCUMENT_OP'}
+
     @classmethod
     def classify(cls, action_type: str, target: str = "",
                  content: str = "") -> ApprovalTier:
         """Classify an operation into a security tier.
         
         Args:
-            action_type: The type of operation (e.g. DELETE, WRITE, COMMAND, DOCUMENT_OP)
+            action_type: The type of operation (e.g. DELETE, WRITE, COMMAND)
             target: The target path or resource
             content: Optional content for context-aware classification
             
         Returns:
-            ApprovalTier indicating required approval level
+            ApprovalTier indicating required approval level.
+            Unknown action types default to TIER_3 (fail closed).
         """
         if action_type in cls.TIER_4_OPS:
             return ApprovalTier.TIER_4
         if action_type in cls.TIER_3_OPS or action_type == 'DELETE':
             return ApprovalTier.TIER_3
+
+        # Path-based escalation: sensitive targets → TIER_3 regardless of action type
         if target:
             for pattern in cls.SENSITIVE_PATTERNS:
                 if re.search(pattern, target):
@@ -74,9 +83,13 @@ class OperationClassifier:
                         return ApprovalTier.TIER_3
             return ApprovalTier.TIER_2
 
-        if action_type in ('WRITE', 'COMMAND'):
+        if action_type in cls.TIER_2_OPS:
             return ApprovalTier.TIER_2
-        return ApprovalTier.TIER_1
+        if action_type in cls.TIER_1_OPS:
+            return ApprovalTier.TIER_1
+
+        # Unknown action type — fail closed, require FIDO2 approval
+        return ApprovalTier.TIER_3
 
     @classmethod
     def get_required_role(cls, tier: ApprovalTier,
@@ -97,6 +110,20 @@ class OperationClassifier:
         elif tier == ApprovalTier.TIER_2:
             return UserRole.RESTRICTED
         return UserRole.GUEST
+
+    @classmethod
+    def get_required_authenticator(cls, tier: ApprovalTier) -> str:
+        """Get the required authenticator type for a given tier.
+
+        Tier 3: Any FIDO2 authenticator (platform biometric or roaming key)
+        Tier 4: Roaming hardware key only (YubiKey/Nitrokey physical tap)
+
+        Returns:
+            'any' for Tier 3 (platform or roaming), 'security_key' for Tier 4
+        """
+        if tier == ApprovalTier.TIER_4:
+            return 'security_key'
+        return 'any'
 
 
 __all__ = ['OperationClassifier']

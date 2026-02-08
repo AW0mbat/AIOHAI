@@ -113,11 +113,15 @@ class Verdict(Enum):
 # =============================================================================
 
 class ApprovalTier(Enum):
-    """Hardware approval tier classification."""
+    """Hardware approval tier classification.
+
+    Tier 3: Any FIDO2 authenticator (platform biometric or roaming key)
+    Tier 4: Roaming hardware key ONLY (YubiKey/Nitrokey physical tap required)
+    """
     TIER_1 = 1  # No approval (list, read metadata)
     TIER_2 = 2  # Software approval (read/write non-sensitive)
-    TIER_3 = 3  # Hardware approval (DELETE, sensitive, bulk)
-    TIER_4 = 4  # Physical server presence (policy, HSM, users)
+    TIER_3 = 3  # FIDO2 approval — platform (biometric) or roaming key
+    TIER_4 = 4  # FIDO2 approval — roaming hardware key ONLY (no biometric)
 
 
 class ApprovalStatus(Enum):
@@ -289,6 +293,7 @@ class HardwareApprovalRequest:
     tier: ApprovalTier
     status: ApprovalStatus = ApprovalStatus.PENDING
     required_role: UserRole = UserRole.ADMIN
+    required_authenticator: str = "any"  # 'any', 'security_key', 'platform'
     approved_by: str = ""
     authenticator_used: str = ""
     created_at: str = ""
@@ -306,6 +311,7 @@ class HardwareApprovalRequest:
             'tier': self.tier.value,
             'status': self.status.value,
             'required_role': self.required_role.value,
+            'required_authenticator': self.required_authenticator,
             'approved_by': self.approved_by,
             'authenticator_used': self.authenticator_used,
             'created_at': self.created_at,

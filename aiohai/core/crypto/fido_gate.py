@@ -388,10 +388,29 @@ class FIDO2ApprovalServer:
             if not user or not user.credentials:
                 return jsonify({'error': 'No credentials registered'}), 400
 
+            # Filter credentials based on tier's required authenticator type.
+            # Tier 4 requires a roaming hardware key (security_key) — platform
+            # authenticators (biometric) are not accepted.
+            required_auth = areq.required_authenticator
+            if required_auth == 'security_key':
+                eligible_creds = [
+                    c for c in user.credentials
+                    if c.authenticator_type == 'security_key'
+                ]
+                if not eligible_creds:
+                    return jsonify({
+                        'error': 'This operation requires a physical security '
+                                 'key (YubiKey/Nitrokey). Platform authenticators '
+                                 '(biometric) are not accepted for Tier 4 '
+                                 'operations. Register a hardware key first.'
+                    }), 403
+            else:
+                eligible_creds = user.credentials
+
             cred_descs = [
                 PublicKeyCredentialDescriptor(
                     type=PublicKeyCredentialType.PUBLIC_KEY, id=c.credential_id)
-                for c in user.credentials
+                for c in eligible_creds
             ]
 
             req_options, state = self.fido2_server.authenticate_begin(
@@ -553,6 +572,8 @@ class FIDO2ApprovalServer:
             description=description,
             tier=approval_tier,
             required_role=OperationClassifier.get_required_role(approval_tier, target),
+            required_authenticator=OperationClassifier.get_required_authenticator(
+                approval_tier),
             created_at=now.isoformat(),
             expires_at=(now + timedelta(minutes=self.request_expiry_minutes)).isoformat(),
             metadata=metadata or {},

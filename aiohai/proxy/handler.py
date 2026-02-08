@@ -18,9 +18,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Optional, Tuple
 
-from aiohai.core.types import AlertSeverity, Verdict
+from aiohai.core.types import AlertSeverity, ApprovalTier, Verdict
 from aiohai.core.patterns import OFFICE_SCANNABLE_EXTENSIONS
 from aiohai.core.templates import HELP_TEXT
+from aiohai.core.crypto.classifier import OperationClassifier
 from aiohai.proxy.action_parser import ActionParser
 
 __all__ = ['UnifiedProxyHandler', 'HandlerContext']
@@ -392,29 +393,31 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             if not pending:
                 return "✅ No non-destructive actions to execute."
 
-        # SECURITY FIX (F-001): Separate tier3 actions — cannot be batch-approved
-        tier3_actions = {k: v for k, v in pending.items()
-                         if v.get('tier3_required')}
+        # SECURITY FIX (F-001): Separate hardware-gated actions — cannot be batch-approved
+        hw_actions = {k: v for k, v in pending.items()
+                         if v.get('hardware_tier', 0) >= 3}
         normal_actions = {k: v for k, v in pending.items()
-                          if not v.get('tier3_required')}
+                          if v.get('hardware_tier', 0) < 3}
 
         results = []
 
-        if tier3_actions:
+        if hw_actions:
             results.append(
-                f"⚠️ **{len(tier3_actions)} action(s) require hardware approval "
+                f"⚠️ **{len(hw_actions)} action(s) require hardware approval "
                 f"and cannot be batch-confirmed:**\n")
-            for aid, action in tier3_actions.items():
+            for aid, action in hw_actions.items():
                 short_id = aid[:8]
+                tier_lvl = action.get('hardware_tier', 3)
+                key_type = "🔑 hardware key" if tier_lvl >= 4 else "🔐 FIDO2"
                 results.append(
-                    f"  🔐 `{short_id}` **{action['type']}** — "
+                    f"  {key_type} `{short_id}` **{action['type']}** — "
                     f"`{os.path.basename(action['target'])}`")
             results.append(
                 f"\nConfirm these individually with `CONFIRM <id>` "
-                f"(hardware key tap required).\n")
+                f"(hardware approval required).\n")
 
         if not normal_actions:
-            if tier3_actions:
+            if hw_actions:
                 return "\n".join(results)
             return "✅ No pending actions to execute."
 
@@ -479,6 +482,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
         atype = action['type']
         target = action.get('target', '')
+        # Use the stored tier level (3 or 4), defaulting to 3
+        tier_level = action.get('hardware_tier', 3)
 
         try:
             # Create the hardware approval request
@@ -495,7 +500,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 operation_type=atype,
                 target=target,
                 description=f"{atype} on {os.path.basename(target)}",
-                tier=3,
+                tier=tier_level,
                 metadata={'content_preview': sanitized_preview}
             )
             request_id = req.get('request_id', '')
@@ -559,8 +564,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         target = action['target']
         content = action['content']
 
-        # SECURITY FIX (F-001): Enforce FIDO2 hardware approval for Tier 3
-        if action.get('tier3_required'):
+        # SECURITY FIX (F-001): Enforce FIDO2 hardware approval for Tier 3+
+        if action.get('hardware_tier', 0) >= 3:
             approved, message = self._require_hardware_approval(action)
             if not approved:
                 return message
@@ -675,18 +680,34 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         lines = []
         action_ids = []
 
+        # Known executable action types
+        _KNOWN_ACTION_TYPES = frozenset(
+            self._ACTION_DISPATCH.keys()) | {'API_QUERY'}
+
         for a in actions:
             atype, target, content = a['type'], a['target'], a['content']
 
+            # ----- Reject unknown action types -----
+            if atype not in _KNOWN_ACTION_TYPES:
+                self.ctx.logger.log_blocked(
+                    "UNKNOWN_ACTION_TYPE", target or atype,
+                    f"Unrecognized action type: {atype}")
+                lines.append(
+                    f"\n\n---\n### 🚫 Unknown Action Type: `{atype}`"
+                    f"\n\nThis action type is not recognized by the proxy. "
+                    f"Supported types: {', '.join(sorted(_KNOWN_ACTION_TYPES))}."
+                )
+                continue
+
             # ----- Pre-approval validation -----
-            tier3_required = False
+            hardware_tier = 0  # 0 = no hardware, 3 = any FIDO2, 4 = hardware key only
             self._pending_pii_warning = None
 
             if atype in ('READ', 'WRITE', 'DELETE', 'LIST') and target:
                 result = self._pre_validate_file_action(atype, target, content)
                 if result is None:
                     continue  # Was blocked — message already appended to lines
-                tier3_required, lines_to_add = result
+                hardware_tier, lines_to_add = result
                 lines.extend(lines_to_add)
 
             elif atype == 'COMMAND' and target:
@@ -698,20 +719,61 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                         f"\n\nCommand rejected by security policy: **{reason}**"
                     )
                     continue
-                tier3_required = False
+                hardware_tier = 0
                 self._pending_pii_warning = None
 
             elif atype == 'API_QUERY' and target:
                 result = self._pre_validate_api_query(atype, target, content)
                 if result is None:
                     continue  # Blocked
-                tier3_required, _ = result
+                hardware_tier, _ = result
 
             else:
-                tier3_required = False
+                hardware_tier = 0
                 self._pending_pii_warning = None
 
-            # ----- Create approval request -----
+            # Use OperationClassifier to escalate tier if action type warrants it
+            classified_tier = OperationClassifier.classify(atype, target, content)
+            if classified_tier.value > hardware_tier:
+                hardware_tier = classified_tier.value
+            # Only tiers 3+ require hardware approval
+            if hardware_tier < 3:
+                hardware_tier = 0
+
+            # ----- Tier 1: Auto-execute (logged, no approval needed) -----
+            # Both the classifier AND pre-validation must agree this is low-risk.
+            # Pre-validation can escalate hardware_tier for sensitive paths/APIs
+            # even when the classifier says TIER_1.
+            if classified_tier.value <= 1 and hardware_tier == 0:
+                if atype == 'API_QUERY':
+                    # API_QUERY has its own execution path
+                    result = self._execute_api_query(
+                        {'type': atype, 'target': target, 'content': content})
+                    self.ctx.logger.log_event(
+                        "AUTO_EXECUTED", AlertSeverity.INFO, {
+                            'action_type': atype, 'target': target[:200],
+                            'tier': 1,
+                        })
+                    lines.append(result)
+                else:
+                    dispatch = self._ACTION_DISPATCH.get(atype)
+                    if dispatch:
+                        method_name, uses_content = dispatch
+                        method = getattr(self.ctx.executor, method_name)
+                        ok, out = (method(target, content) if uses_content
+                                   else method(target))
+                        self.ctx.logger.log_event(
+                            "AUTO_EXECUTED", AlertSeverity.INFO, {
+                                'action_type': atype, 'target': target[:200],
+                                'tier': 1, 'success': ok,
+                            })
+                        lines.append(self._format_single_result(
+                            atype, target, ok, out))
+                    else:
+                        lines.append(f"⚠️ Unknown action type: {atype}")
+                continue
+
+            # ----- Tier 2+: Create approval request -----
             try:
                 # H-5 FIX: Always pass session_id to enforce session binding
                 aid = self.ctx.approval_mgr.create_request(
@@ -722,18 +784,18 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 lines.append(f"\n\n---\n### 🚫 Action Blocked\n\n{str(e)}")
                 continue
 
-            # Tag the pending approval with tier-3 if needed
-            if tier3_required:
+            # Tag the pending approval with hardware tier if needed
+            if hardware_tier >= 3:
                 with self.ctx.approval_mgr.lock:
                     if aid in self.ctx.approval_mgr.pending:
-                        self.ctx.approval_mgr.pending[aid]['tier3_required'] = True
+                        self.ctx.approval_mgr.pending[aid]['hardware_tier'] = hardware_tier
 
             short_id = aid[:8]
             action_ids.append((short_id, atype, target))
             card = self._format_action_card(atype, target, content, short_id)
 
-            # Prepend tier-3 warning to the action card
-            if tier3_required:
+            # Prepend tier warning to the action card
+            if hardware_tier >= 3:
                 tier3_reason = ""
                 if self._pending_pii_warning:
                     tier3_reason = (
@@ -744,11 +806,17 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                     tier3_reason = (
                         f"\n\nThis action targets sensitive data. "
                     )
+                if hardware_tier >= 4:
+                    auth_msg = "**physical security key tap** (biometric not accepted)"
+                    icon = "🔑"
+                else:
+                    auth_msg = (
+                        "**FIDO2 hardware key tap** or **biometric verification**")
+                    icon = "🔐"
                 card = (
-                    f"\n\n---\n### 🔐 Hardware Approval Required"
+                    f"\n\n---\n### {icon} Hardware Approval Required"
                     f"{tier3_reason}"
-                    f"Approval requires "
-                    f"**FIDO2 hardware key tap** or **biometric verification**."
+                    f"Approval requires {auth_msg}."
                     + card
                 )
             elif self._pending_pii_warning:
@@ -771,7 +839,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         """Pre-validate a file action (READ/WRITE/DELETE/LIST).
 
         Returns None if blocked (caller should skip this action).
-        Returns (tier3_required, extra_lines) if valid.
+        Returns (hardware_tier, extra_lines) if valid.
+        hardware_tier: 0 = no hardware, 3 = any FIDO2, 4 = hardware key only
         """
         is_safe, resolved, reason = self.ctx.executor.path_validator.validate(target)
         if not is_safe:
@@ -781,7 +850,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             return None  # Caller checks for None
 
         # Tier-3 paths: still create approval but tag it for FIDO2
-        tier3_required = (reason == "Tier 3 required")
+        hardware_tier = 3 if (reason == "Tier 3 required") else 0
 
         # GAP 8 FIX: Block macro-enabled extensions at pre-approval
         if atype == 'WRITE' and self.ctx.executor.macro_blocker:
@@ -798,7 +867,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 content, file_type=target_ext,
                 filename=os.path.basename(target))
             if pre_scan.get('should_block'):
-                tier3_required = True
+                hardware_tier = max(hardware_tier, 3)
                 pii_summary = self.ctx.executor.doc_scanner.get_scan_summary(pre_scan)
                 self._pending_pii_warning = pii_summary
             elif pre_scan.get('findings'):
@@ -809,12 +878,12 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         else:
             self._pending_pii_warning = None
 
-        return tier3_required, []
+        return hardware_tier, []
 
     def _pre_validate_api_query(self, atype: str, target: str, content: str):
         """Pre-validate an API_QUERY action.
 
-        Returns None if blocked, (tier3_required, []) if valid.
+        Returns None if blocked, (hardware_tier, []) if valid.
         """
         is_graph = target.lower().startswith('https://graph.microsoft.com')
 
@@ -852,7 +921,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             tier3_required = False
 
         self._pending_pii_warning = None
-        return tier3_required, []
+        return 3 if tier3_required else 0, []
 
     def _format_action_card(self, atype: str, target: str, content: str,
                              short_id: str) -> str:

@@ -2,11 +2,11 @@
 
 ## Security Audit Revision
 
-**Version:** 3.0.1
+**Version:** 3.0.2
 **Date:** February 2026
 **Classification:** SECURITY CRITICAL
 
-This revision incorporates all findings from the comprehensive security audit:
+This revision incorporates all findings from the comprehensive security audit and the v5.1.0 hardening pass:
 - Code-enforced permission gates (not LLM compliance alone)
 - Sandboxed command execution
 - LLM output validation
@@ -17,6 +17,11 @@ This revision incorporates all findings from the comprehensive security audit:
 - Nitrokey HSM hardware log signing and policy integrity verification
 - FIDO2/WebAuthn tiered hardware approval for destructive operations
 - Automatic lockdown on policy tampering (10-second detection window)
+- **v5.1.0:** FIDO2 endpoint authentication hardening
+- **v5.1.0:** Request/response size bounds enforcement
+- **v5.1.0:** HSM PIN handling via environment variable or interactive prompt
+- **v5.1.0:** Content integrity hash includes action type and target
+- **v5.1.0:** Resource limits documented
 
 ---
 
@@ -164,31 +169,59 @@ RESPONSE TO USER
 - Policy file integrity is verified against an HSM-stored signature at startup
 - HSM health is monitored every 30 seconds; disconnection triggers degradation alert
 - If `hsm_required=True` (default), proxy refuses to start without HSM
+- HSM PIN is provided via `AIOHAI_HSM_PIN` environment variable (recommended), interactive prompt at startup, or `--hsm-pin` CLI flag (deprecated — visible in process list). PIN is never stored in config.json.
 
 **FIDO2/WebAuthn Hardware Approval:**
 - Destructive and sensitive operations require physical security key tap or phone biometric
 - FIDO2 server runs on HTTPS over LAN (default port 8443)
 - Pending approvals persist across proxy restarts
 - SSL certificate pinning prevents man-in-the-middle on LAN
+- **Endpoint authentication:** `/api/pending`, `/api/users`, `/api/request`, `/api/approve`, and `/api/status` require API secret authentication. `/api/health` is unauthenticated but returns only status and version (no user count or pending count).
+- **Registration gating:** The first user can self-register as admin (bootstrap). After bootstrap, admin-role registrations require existing admin authorization via API secret. Non-admin registrations remain open.
 
 **Integrity Monitoring:**
 - Policy file hash is checked every 10 seconds
 - If tampered or deleted → automatic lockdown (all new requests rejected with HTTP 503)
 - Lockdown is irreversible without proxy restart — by design
 
-### 0.4 Tiered Approval System
+### 0.4 Input/Output Bounds
 
-Operations are classified into three tiers based on risk:
+**CODE ENFORCEMENT:** All request and response sizes are bounded:
+
+| Boundary | Limit | Enforcement |
+|----------|-------|-------------|
+| Request body (incoming) | 10 MB | HTTP 413 returned, request rejected |
+| Response body (from Ollama) | 50 MB | Response truncated at limit |
+
+These limits cannot be changed by the LLM. They are hardcoded constants in the proxy handler.
+
+### 0.5 Tiered Approval System
+
+Operations are classified into four tiers based on risk:
 
 | Tier | Risk | Approval Method | Examples |
 |------|------|----------------|----------|
-| **Tier 1** | Low | Automatic (logged only) | LIST directory, read file metadata |
-| **Tier 2** | Medium | Software approval (CONFIRM in chat) | READ/WRITE non-sensitive file, whitelisted command |
-| **Tier 3** | High | Hardware approval (FIDO2 key tap or biometric) | DELETE, WRITE to sensitive path, bulk operations |
+| **Tier 1** | Low | Automatic (executed immediately, logged) | LIST directory, READ non-sensitive file |
+| **Tier 2** | Medium | Software approval (CONFIRM in chat) | WRITE non-sensitive file, whitelisted COMMAND |
+| **Tier 3** | High | FIDO2 — biometric or hardware key | DELETE, WRITE to sensitive path, bulk operations |
+| **Tier 4** | Maximum | FIDO2 — roaming hardware key ONLY (no biometric) | Policy changes, HSM operations, user management, security config |
+| **BLOCKED** | Prohibited | Cannot proceed — no approval possible | Credential files, system files, persistence |
+
+**Tier 1 auto-execution:** Tier 1 actions are executed immediately when the LLM generates them — no CONFIRM required. They still pass through all pre-validation (path validation, command validation) and are logged to the audit trail. Auto-execution only occurs when both the OperationClassifier and the pre-validation agree the action is Tier 1. If either escalates the tier (e.g., a READ targeting a sensitive path), the action requires approval.
+
+**Tier 3 vs Tier 4 distinction:** Both require FIDO2 hardware approval. Tier 3 accepts any registered authenticator — a platform biometric (Face ID, fingerprint, Windows Hello) or a roaming hardware key (YubiKey, Nitrokey). Tier 4 requires a **roaming hardware key only** — platform biometrics are rejected. This ensures that the highest-risk operations cannot be approved from a potentially compromised phone or laptop, only by physically tapping a dedicated security device.
 
 The code determines the tier — the LLM cannot influence which tier an operation falls into.
 
-### 0.5 What Code Enforces vs. What LLM Decides
+Note: Operations that match BLOCKED_PATH_PATTERNS or BLOCKED_COMMAND_PATTERNS are rejected by code before the tier system is even consulted.
+
+### 0.6 Optional Dual-LLM Verification
+
+When configured (`enable_dual_llm: true` in config.json), a secondary LLM reviews the primary LLM's proposed actions before execution. If the secondary model flags an action as suspicious, it is blocked. The primary LLM cannot influence the secondary model's review.
+
+This is an optional additional safety layer — it adds latency but catches multi-step attacks or social engineering that the primary model might comply with.
+
+### 0.7 What Code Enforces vs. What LLM Decides
 
 | Security Control | Enforced By | LLM Role |
 |-----------------|-------------|----------|
@@ -705,6 +738,30 @@ for dll in app_directory:
         REFUSE TO START
 ```
 
+### 7.5 Resource Limits (Per-Session)
+
+**CODE ENFORCEMENT:** The proxy enforces per-session resource limits to prevent denial-of-service and runaway operations.
+
+| Resource | Limit | Enforcement |
+|----------|-------|-------------|
+| Single command execution time | 30 seconds | Process killed |
+| Total session duration | 60 minutes | Session ended |
+| Memory per process | 512 MB / 25% system | Process killed |
+| CPU per process | 50% system | Process throttled |
+| Total disk writes per session | 100 MB | Writes rejected |
+| Single file size | 50 MB | Write rejected |
+| Files created per session | 100 | Creates rejected |
+| Requests per minute | 60 | Requests queued |
+| Actions per minute | 30 | Actions queued |
+| Concurrent actions | 5 | Actions queued |
+| Single response size | 1 MB | Response truncated |
+
+These limits are configured in config.json and enforced by code. The LLM cannot modify or bypass them.
+
+### 7.6 Circuit Breaker (Ollama Health)
+
+If Ollama fails to respond 3 consecutive times, the proxy opens a circuit breaker for 60 seconds. During this cooldown, all requests receive HTTP 503. This prevents cascading failures and gives Ollama time to recover. The circuit automatically closes after the cooldown period.
+
 ---
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -911,9 +968,10 @@ Users can add:
 
 | Tier | Risk Level | Approval Method | Examples |
 |------|------------|----------------|----------|
-| **Tier 1** | Low | Automatic (logged only) | LIST directory, read file metadata |
-| **Tier 2** | Medium | Software approval (type CONFIRM in chat) | READ/WRITE non-sensitive, whitelisted command |
-| **Tier 3** | High | Hardware approval (FIDO2 key tap or biometric) | DELETE, sensitive writes, bulk operations, admin |
+| **Tier 1** | Low | Automatic (executed immediately, logged) | LIST directory, READ non-sensitive file |
+| **Tier 2** | Medium | Software approval (type CONFIRM in chat) | WRITE non-sensitive, whitelisted COMMAND |
+| **Tier 3** | High | FIDO2 — biometric or hardware key | DELETE, sensitive writes, bulk operations |
+| **Tier 4** | Maximum | FIDO2 — roaming hardware key ONLY | Policy changes, HSM operations, user management, security config |
 | **BLOCKED** | Prohibited | Cannot proceed — no approval possible | Credential files, system files, persistence |
 
 Note: Operations that match BLOCKED_PATH_PATTERNS or BLOCKED_COMMAND_PATTERNS are rejected by code before the tier system is even consulted.
@@ -983,11 +1041,11 @@ Type 'quit' to exit
 
 ```
 C:\AIOHAI\logs\
+├── security_events.log  # Main security event log
 ├── actions.log          # All actions (approved and not)
 ├── blocked.log          # Blocked actions
-├── security_events.log  # Security events
 ├── network.log          # Network activity
-└── execution.log        # Command executions
+└── hsm_signed.log       # HSM-signed log entries (when HSM is connected)
 ```
 
 ### 13.2 Tamper-Evident Logging
@@ -1006,11 +1064,42 @@ Logs use chained hashes for tamper evidence:
 }
 ```
 
+### 13.3 Content Integrity Verification
+
+Approval requests include a content integrity hash computed from the action type, target, and content combined: `SHA256(action_type:target:content)`. When an approval is confirmed, the hash is recomputed and compared — if the action was tampered with between request and confirmation, the approval is invalidated and logged as `APPROVAL_CONTENT_TAMPERED`.
+
+### 13.4 Session Transparency Report
+
+The user can type `REPORT` at any time to see a complete accounting of all actions taken in the current session:
+- Every action attempted (type, target, result)
+- Every block (what, why, which security layer caught it)
+- Resource usage (files read/written, commands executed, disk bytes written)
+- Session duration
+
 ---
 
 ## PART 14: VERSION HISTORY
 
-### v3.0 (Current)
+### v3.0.2 (February 2026 — v5.1.0 Hardening)
+- Added Tier 4 (physical server presence) to approval tier documentation
+- Added resource limits documentation (Section 7.5)
+- Added circuit breaker documentation (Section 7.6)
+- Added DualLLMVerifier documentation (Section 0.6)
+- Added input/output bounds documentation (Section 0.4)
+- Added session transparency report documentation (Section 13.4)
+- Added content integrity verification documentation (Section 13.3)
+- Corrected log file list (removed execution.log, added hsm_signed.log)
+- Documented v5.1.0 security fixes:
+  - FIDO2 endpoints /api/pending and /api/users now require API secret authentication
+  - FIDO2 /api/health no longer discloses user count or pending request count
+  - Admin registration gated after bootstrap (first user is admin, subsequent admin registrations require existing admin authorization)
+  - HSM PIN accepted via AIOHAI_HSM_PIN environment variable or interactive prompt (CLI --hsm-pin deprecated)
+  - Request bodies capped at 10 MB (HTTP 413), response reads capped at 50 MB
+  - Content integrity hash now includes action_type and target (not just content)
+  - HSM signing uses correct PKCS#11 mechanism (CKM_RSA_PKCS for pre-hashed data)
+  - Authenticator tracking logs actual key used (matched by credential_id)
+
+### v3.0 (January 2026)
 - **Layer 0: Code Enforcement** — Security enforced by wrapper code
 - **Action validation pipeline** — LLM output validated before execution
 - **Nitrokey HSM integration** — Hardware log signing and policy integrity
@@ -1086,6 +1175,13 @@ STRENGTH: Code enforcement cannot be bypassed by prompts
 | Persistence | Pattern blocking for persistence mechanisms |
 | UAC bypass | Registry pattern blocking |
 | Obfuscation | Pattern + entropy analysis |
+| Oversized request DoS | 10 MB request body limit (HTTP 413) |
+| Ollama failure cascade | Circuit breaker — 3 failures → 60s cooldown (HTTP 503) |
+| Resource exhaustion | Per-session resource limits (CPU, memory, disk, rate) |
+| FIDO2 endpoint enumeration | API secret required on /api/pending, /api/users |
+| Rogue admin registration | Admin registration gated after bootstrap |
+| Multi-step social engineering | Optional DualLLMVerifier reviews actions with secondary model |
+| Approval content tampering | Content integrity hash (action_type + target + content) |
 
 ### Residual Risks
 
@@ -1101,5 +1197,5 @@ STRENGTH: Code enforcement cannot be bypassed by prompts
 *End of Document*
 
 **Document Hash:** [Computed at deployment]
-**Last Updated:** January 2026
+**Last Updated:** February 2026
 **Classification:** SECURITY CRITICAL
