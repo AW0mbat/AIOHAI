@@ -1,5 +1,5 @@
 """
-AIOHAI Core Trust — Session Elevation and Trust Matrix Adjustments.
+AIOHAI Core Trust — Session Elevation, Trust Matrix Adjustments, and Admin Config.
 
 Submodules:
 - session             : SessionManager — temporary approval gate step-downs (Phase 2)
@@ -7,7 +7,10 @@ Submodules:
 - matrix_adjuster     : TrustMatrixAdjuster — runtime trust matrix adjustments (Phase 3)
 - change_request_log  : ChangeRequestLog — gate-level change request persistence (Phase 3)
 
-Phases 2-3 of Approval Gate Taxonomy v3 implementation.
+Related (in parent package):
+- core.config_manager : ConfigManager — admin-facing config wrapper (Phase 4)
+
+Phases 2-4 of Approval Gate Taxonomy v3 implementation.
 """
 # O6: Import from submodules directly:
 #   from aiohai.core.trust.session import SessionManager

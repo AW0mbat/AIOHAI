@@ -179,6 +179,25 @@ class UnifiedSecureProxy:
         except ImportError:
             pass
 
+        # Phase 4: Config manager + Admin API server
+        self.config_manager = None
+        self.admin_api = None
+        try:
+            from aiohai.core.config_manager import ConfigManager
+            from aiohai.proxy.admin_api import AdminAPIServer
+            self.config_manager = ConfigManager(
+                matrix_adjuster=self.matrix_adjuster,
+                change_request_log=self.change_request_log,
+            )
+            self.admin_api = AdminAPIServer(
+                config_manager=self.config_manager,
+                session_manager=self.session_manager,
+                change_request_log=self.change_request_log,
+                matrix_adjuster=self.matrix_adjuster,
+            )
+        except ImportError:
+            pass
+
         # Initialize HSM
         self.hsm_manager = None
         if _HSM_AVAILABLE and self.config.hsm_enabled:
@@ -825,6 +844,14 @@ class UnifiedSecureProxy:
                 'fido2_active': self.fido2_client is not None,
             })
 
+            # Start admin API server (Phase 4)
+            if self.admin_api:
+                if self.admin_api.start():
+                    print(f"   Admin API ......... http://127.0.0.1:{self.admin_api.port}")
+                    self.logger.log_event("ADMIN_API_STARTED", AlertSeverity.INFO, {
+                        'port': self.admin_api.port,
+                    })
+
             httpd.serve_forever()
 
         except KeyboardInterrupt:
@@ -834,6 +861,8 @@ class UnifiedSecureProxy:
                                   {'error': str(e)})
             raise
         finally:
+            if self.admin_api:
+                self.admin_api.stop()
             self.integrity.stop_monitoring()
             self.alerts.shutdown()
             if self.hsm_manager:

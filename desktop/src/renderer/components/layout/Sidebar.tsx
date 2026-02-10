@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type NavPage = 'chat' | 'approvals' | 'dashboard' | 'logs' | 'settings';
+export type NavPage = 'chat' | 'approvals' | 'dashboard' | 'logs' | 'settings' | 'admin';
 
 interface SidebarProps {
   activePage: NavPage;
@@ -14,6 +14,7 @@ const navItems: { id: NavPage; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard',  icon: '📊' },
   { id: 'logs',      label: 'Logs',       icon: '📋' },
   { id: 'settings',  label: 'Settings',   icon: '⚙️' },
+  { id: 'admin',     label: 'Admin',      icon: '🛡️' },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate, pendingApprovals }) => {

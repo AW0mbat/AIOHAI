@@ -5,6 +5,7 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { ConnectionSetup } from './components/settings/ConnectionSetup';
 import { ChatPanel } from './components/chat';
 import { ApprovalsPanel, LogViewerPanel } from './components/Placeholders';
+import { AdminPanel } from './components/admin/AdminPanel';
 import { OpenWebUIClient } from './services/OpenWebUIClient';
 import { useHealth } from './hooks/useHealth';
 import './types/electron';
@@ -44,6 +45,13 @@ const App: React.FC = () => {
         return (
           <ConnectionSetup
             onConnected={handleConnected}
+          />
+        );
+      case 'admin':
+        return (
+          <AdminPanel
+            adminApiUrl="http://127.0.0.1:11437"
+            adminSecret=""
           />
         );
       default:
