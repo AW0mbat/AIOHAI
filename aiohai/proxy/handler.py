@@ -44,6 +44,8 @@ class HandlerContext:
         'api_query_executor', 'graph_api_registry', 'ollama_breaker',
         'hsm_manager', 'fido2_client', 'fido2_server', 'integrity_verifier',
         'session_manager',  # Phase 2: Session elevation manager
+        'matrix_adjuster',  # Phase 3: Trust matrix adjuster
+        'change_request_log',  # Phase 3: Change request log
     )
 
     def __init__(self, **kwargs):
@@ -343,6 +345,22 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             target_id = match.group(1)
             return self._end_session(target_id)
 
+        # SETLEVEL - propose trust matrix adjustment (Phase 3)
+        match = re.match(
+            r'^SETLEVEL\s+(\S+)\s+(\S+)\s+(\d+)(?:\s+(.+))?$', m)
+        if match:
+            return self._propose_trust_adjustment(
+                match.group(1), match.group(2),
+                int(match.group(3)), match.group(4) or "")
+
+        # OVERRIDES - show current trust matrix overrides (Phase 3)
+        if m == 'OVERRIDES':
+            return self._show_overrides()
+
+        # CHANGEREQUESTS - show pending change requests (Phase 3)
+        if m in ('CHANGEREQUESTS', 'CHANGEREQUEST', 'REQUESTS'):
+            return self._show_change_requests()
+
         return None
 
     def _explain_action(self, approval_id: str) -> str:
@@ -476,7 +494,135 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         session_mgr.close_all(reason="user_closed_all")
         return "🔒 All elevation sessions ended."
 
-    def _execute_all_pending(self, skip_destructive: bool = False) -> str:
+    def _propose_trust_adjustment(
+        self, category_str: str, domain_str: str,
+        level_value: int, reason: str
+    ) -> str:
+        """Propose a trust matrix adjustment (Phase 3).
+
+        Syntax: SETLEVEL <CATEGORY> <DOMAIN> <level> [reason]
+        Example: SETLEVEL EXECUTE HA_LIGHT 14 Make light control silent
+        """
+        adjuster = getattr(self.ctx, 'matrix_adjuster', None)
+        if adjuster is None:
+            return "ℹ️ Trust matrix adjustment not available."
+
+        result = adjuster.propose_from_natural_language(
+            category_str, domain_str, level_value, reason=reason,
+        )
+
+        if result.allowed:
+            adjuster.apply_adjustment(result)
+            adjuster.save_to_file()
+            self.ctx.logger.log_event(
+                "TRUST_ADJUSTMENT_APPLIED", AlertSeverity.INFO, {
+                    'category': category_str,
+                    'domain': domain_str,
+                    'level': level_value,
+                    'reason': reason,
+                })
+            return (
+                f"✅ **Trust level adjusted:**\n"
+                f"  {category_str}:{domain_str} → "
+                f"{result.requested_level.name} (level {level_value})\n"
+                f"  Gate: {result.requested_level.gate.name}"
+            )
+        else:
+            # Log the change request if it's a gate boundary violation
+            change_log = getattr(self.ctx, 'change_request_log', None)
+            if change_log and result.boundary_violated:
+                req_id = change_log.add_from_adjustment_result(
+                    result, user="chat")
+                change_log.save()
+                self.ctx.logger.log_event(
+                    "TRUST_ADJUSTMENT_REJECTED", AlertSeverity.INFO, {
+                        'category': category_str,
+                        'domain': domain_str,
+                        'level': level_value,
+                        'boundary': result.boundary_violated,
+                        'change_request_id': req_id,
+                    })
+
+            lines = [f"❌ **Cannot adjust trust level:**"]
+            lines.append(f"  {result.explanation}")
+            if result.alternatives:
+                lines.append("\n  **Alternatives:**")
+                for alt in result.alternatives:
+                    lines.append(
+                        f"  · {alt['level_name']} (level {alt['level']}): "
+                        f"{alt['description']}"
+                    )
+            if result.boundary_violated:
+                lines.append(
+                    "\n  📝 This request has been logged. "
+                    "Use `CHANGEREQUESTS` to view."
+                )
+            return "\n".join(lines)
+
+    def _show_overrides(self) -> str:
+        """Show current trust matrix overrides (Phase 3)."""
+        adjuster = getattr(self.ctx, 'matrix_adjuster', None)
+        if adjuster is None:
+            return "ℹ️ Trust matrix adjustment not available."
+
+        overrides = adjuster.get_all_overrides()
+        if not overrides:
+            return "✅ No trust level overrides active. All defaults in use."
+
+        lines = ["**Active Trust Level Overrides:**\n"]
+        lines.append("| Action | Current | Default | Gate |")
+        lines.append("|--------|---------|---------|------|")
+        for key_str, data in sorted(overrides.items()):
+            lines.append(
+                f"| `{key_str}` | {data['level_name']} ({data['level']}) | "
+                f"{data.get('default_level', '?')} | {data['gate']} |"
+            )
+        lines.append(
+            f"\n{len(overrides)} override(s) active. "
+            f"Use `SETLEVEL` to adjust or reset via companion app."
+        )
+        return "\n".join(lines)
+
+    def _show_change_requests(self) -> str:
+        """Show pending change requests (Phase 3)."""
+        change_log = getattr(self.ctx, 'change_request_log', None)
+        if change_log is None:
+            return "ℹ️ Change request log not available."
+
+        pending = change_log.get_pending()
+        if not pending:
+            return "✅ No pending change requests."
+
+        lines = ["**Pending Change Requests:**\n"]
+        for req in pending:
+            req_id = req.get('request_id', '?')
+            cat = req.get('category', '?')
+            dom = req.get('domain', '?')
+            cur_gate = req.get('current_gate', '?')
+            req_gate = req.get('requested_gate', '?')
+            boundary = req.get('boundary_type', '?')
+            context = req.get('user_context', '')
+            ts = req.get('timestamp', '?')[:10]
+
+            icon = "⚠️" if boundary == 'manual_code_edit_only' else "☐"
+            lines.append(
+                f"  {icon} **{req_id[:16]}** ({ts})\n"
+                f"    {cat}:{dom} — {cur_gate} → {req_gate}\n"
+                f"    {context[:80] if context else '(no reason given)'}"
+            )
+            if boundary == 'manual_code_edit_only':
+                lines.append(
+                    "    ⚠️ DENY gate — manual code edit only"
+                )
+            lines.append("")
+
+        lines.append(
+            f"{len(pending)} pending request(s). "
+            f"Apply via companion app (requires NFC at server)."
+        )
+        return "\n".join(lines)
+
+
         """Execute all pending actions in sequence, optionally skipping destructive."""
         pending = self.ctx.approval_mgr.get_all_pending()
 

@@ -159,6 +159,26 @@ class UnifiedSecureProxy:
         except ImportError:
             pass
 
+        # Phase 3: Trust matrix adjuster + change request log
+        self.matrix_adjuster = None
+        self.change_request_log = None
+        try:
+            from aiohai.core.trust.matrix_adjuster import TrustMatrixAdjuster
+            from aiohai.core.trust.change_request_log import ChangeRequestLog
+            self.change_request_log = ChangeRequestLog()
+            self.matrix_adjuster = TrustMatrixAdjuster(
+                change_request_log=self.change_request_log,
+            )
+            # Load saved overrides
+            ok, errors = self.matrix_adjuster.load_from_file()
+            if errors:
+                for err in errors:
+                    self.logger.log_event(
+                        "OVERRIDE_LOAD_ERROR", AlertSeverity.WARNING,
+                        {'error': err})
+        except ImportError:
+            pass
+
         # Initialize HSM
         self.hsm_manager = None
         if _HSM_AVAILABLE and self.config.hsm_enabled:
@@ -784,6 +804,8 @@ class UnifiedSecureProxy:
             integrity_verifier=self.integrity,
             ollama_breaker=OllamaCircuitBreaker(),
             session_manager=self.session_manager,
+            matrix_adjuster=self.matrix_adjuster,
+            change_request_log=self.change_request_log,
         )
         print("  ✓ Configured")
         return True
