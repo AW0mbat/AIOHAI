@@ -790,7 +790,7 @@ class TestOfficeFrameworkFile(unittest.TestCase):
         self.assertIn('PII', self.content)
 
     def test_has_metadata_section(self):
-        self.assertIn('Metadata Sanitization', self.content)
+        self.assertIn('MetadataSanitizer', self.content)
 
     def test_has_macro_rules(self):
         self.assertIn('Macro', self.content)
@@ -799,8 +799,9 @@ class TestOfficeFrameworkFile(unittest.TestCase):
         self.assertIn('Graph API', self.content)
 
     def test_has_constraint_rules(self):
-        self.assertIn('Rule 1', self.content)
-        self.assertIn('Rule 14', self.content)
+        # v3 uses "What you must NEVER do" section instead of numbered rules
+        self.assertIn('NEVER', self.content)
+        self.assertIn('Never create macro-enabled', self.content)
 
     def test_has_word_procedures(self):
         self.assertIn('python-docx', self.content)
@@ -816,7 +817,7 @@ class TestOfficeFrameworkFile(unittest.TestCase):
             self.assertNotIn(old, self.content, f"Old naming: {old}")
 
     def test_has_csv_injection_prevention(self):
-        self.assertIn('CSV Injection', self.content)
+        self.assertIn('CSV injection', self.content)
 
     def test_blocked_formulas_documented(self):
         for formula in ('WEBSERVICE', 'FILTERXML', 'RTD', 'SQL.REQUEST'):
@@ -1150,15 +1151,17 @@ class TestAuditRegressions(unittest.TestCase):
 
     # Dead code removal verification
     def test_dead_code_family_removed(self):
-        """FamilyAccessControl and FamilyMember must be removed."""
-        import security.security_components as sc
-        self.assertFalse(hasattr(sc, 'FamilyAccessControl'))
-        self.assertFalse(hasattr(sc, 'FamilyMember'))
+        """FamilyAccessControl and FamilyMember must not exist in current codebase."""
+        # The old monolithic security.security_components module no longer exists.
+        # Verify these classes aren't in the new layered architecture either.
+        import aiohai.core.types as types
+        self.assertFalse(hasattr(types, 'FamilyAccessControl'))
+        self.assertFalse(hasattr(types, 'FamilyMember'))
 
     def test_dead_code_docker_compose_removed(self):
-        """SecureDockerComposeGenerator must be removed."""
-        import security.security_components as sc
-        self.assertFalse(hasattr(sc, 'SecureDockerComposeGenerator'))
+        """SecureDockerComposeGenerator must not exist in current codebase."""
+        import aiohai.core.types as types
+        self.assertFalse(hasattr(types, 'SecureDockerComposeGenerator'))
 
 
 # =============================================================================

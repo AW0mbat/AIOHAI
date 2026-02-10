@@ -796,7 +796,7 @@ class TestImports(unittest.TestCase):
 
     def test_version_bumped(self):
         from aiohai.core.version import __version__
-        self.assertEqual(__version__, "5.3.0")
+        self.assertEqual(__version__, "6.0.0")
 
 
 # =============================================================================

@@ -37,11 +37,16 @@ class LocalServiceRegistry:
 
     def register(self, name: str, host: str, port: int,
                  allowed_paths: List[str], max_response_bytes: int = 1048576,
-                 description: str = ''):
+                 description: str = '', verify_listening: bool = True):
         """Register a local service.
 
         L-7 FIX: Verifies the service is actually listening on the port
         before registration to prevent fake service injection via config.
+
+        Args:
+            verify_listening: If True, perform TCP port check before
+                registering. Set to False only in unit tests where no
+                real service is running.
         """
         # Validate host is localhost
         if host not in ('127.0.0.1', 'localhost', '::1'):
@@ -50,20 +55,21 @@ class LocalServiceRegistry:
             return
 
         # L-7 FIX: Verify service is actually listening
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1' if host == 'localhost' else host, port))
-            sock.close()
-            if result != 0:
-                self.logger.log_event("LOCAL_SERVICE_NOT_LISTENING", AlertSeverity.WARNING,
-                                      {'service': name, 'port': port,
-                                       'reason': 'No service responding on port'})
+        if verify_listening:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex(('127.0.0.1' if host == 'localhost' else host, port))
+                sock.close()
+                if result != 0:
+                    self.logger.log_event("LOCAL_SERVICE_NOT_LISTENING", AlertSeverity.WARNING,
+                                          {'service': name, 'port': port,
+                                           'reason': 'No service responding on port'})
+                    return
+            except Exception as e:
+                self.logger.log_event("LOCAL_SERVICE_VERIFY_FAILED", AlertSeverity.WARNING,
+                                      {'service': name, 'port': port, 'error': str(e)})
                 return
-        except Exception as e:
-            self.logger.log_event("LOCAL_SERVICE_VERIFY_FAILED", AlertSeverity.WARNING,
-                                  {'service': name, 'port': port, 'error': str(e)})
-            return
 
         self._services[name] = {
             'host': host,
@@ -114,7 +120,7 @@ class LocalServiceRegistry:
         svc = self._services.get(service_name, {})
         return svc.get('max_response_bytes', 1048576)
 
-    def load_from_config(self, config_data: dict):
+    def load_from_config(self, config_data: dict, verify_listening: bool = True):
         """Load additional services from config.json local_services section."""
         local_services = config_data.get('local_services', {})
         for name, svc_cfg in local_services.items():
@@ -130,6 +136,7 @@ class LocalServiceRegistry:
                 allowed_paths=svc_cfg.get('allowed_paths', []),
                 max_response_bytes=svc_cfg.get('max_response_bytes', 1048576),
                 description=svc_cfg.get('description', ''),
+                verify_listening=verify_listening,
             )
 
 

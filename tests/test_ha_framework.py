@@ -263,7 +263,7 @@ class TestLocalServiceRegistry(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_register_localhost_accepted(self):
-        self.reg.register("test_svc", "127.0.0.1", 5000, ["/api/events"])
+        self.reg.register("test_svc", "127.0.0.1", 5000, ["/api/events"], verify_listening=False)
         ok, svc = self.reg.validate_request("http://127.0.0.1:5000/api/events")
         self.assertTrue(ok)
         self.assertEqual(svc, "test_svc")
@@ -281,41 +281,41 @@ class TestLocalServiceRegistry(unittest.TestCase):
         self.assertIn("No registered service", reason)
 
     def test_validate_disallowed_path(self):
-        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/events"])
+        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/events"], verify_listening=False)
         ok, reason = self.reg.validate_request("http://127.0.0.1:5000/api/secret")
         self.assertFalse(ok)
         self.assertIn("not allowed", reason)
 
     def test_validate_wildcard_path(self):
-        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/*"])
+        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/*"], verify_listening=False)
         ok, svc = self.reg.validate_request("http://127.0.0.1:5000/api/events")
         self.assertTrue(ok)
         ok2, svc2 = self.reg.validate_request("http://127.0.0.1:5000/api/stats")
         self.assertTrue(ok2)
 
     def test_validate_https_scheme(self):
-        self.reg.register("ha", "127.0.0.1", 8123, ["/api/states"])
+        self.reg.register("ha", "127.0.0.1", 8123, ["/api/states"], verify_listening=False)
         ok, svc = self.reg.validate_request("https://127.0.0.1:8123/api/states")
         self.assertTrue(ok)
 
     def test_validate_external_host_blocked(self):
         """Even if a service is registered, queries to external hosts must fail."""
-        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/*"])
+        self.reg.register("frigate", "127.0.0.1", 5000, ["/api/*"], verify_listening=False)
         ok, reason = self.reg.validate_request("http://10.0.0.5:5000/api/events")
         self.assertFalse(ok)
 
     def test_validate_ftp_scheme_blocked(self):
-        self.reg.register("svc", "127.0.0.1", 21, ["/"])
+        self.reg.register("svc", "127.0.0.1", 21, ["/"], verify_listening=False)
         ok, reason = self.reg.validate_request("ftp://127.0.0.1:21/")
         self.assertFalse(ok)
         self.assertIn("Scheme", reason)
 
     def test_max_response_default(self):
-        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"])
+        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"], verify_listening=False)
         self.assertEqual(self.reg.get_max_response("svc"), 1048576)
 
     def test_max_response_custom(self):
-        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"], max_response_bytes=500)
+        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"], max_response_bytes=500, verify_listening=False)
         self.assertEqual(self.reg.get_max_response("svc"), 500)
 
     def test_load_from_config_valid(self):
@@ -328,7 +328,7 @@ class TestLocalServiceRegistry(unittest.TestCase):
                 }
             }
         }
-        self.reg.load_from_config(config_data)
+        self.reg.load_from_config(config_data, verify_listening=False)
         ok, svc = self.reg.validate_request("http://127.0.0.1:9090/healthz")
         self.assertTrue(ok)
         self.assertEqual(svc, "custom")
@@ -359,7 +359,7 @@ class TestLocalAPIQueryExecutor(unittest.TestCase):
         self.cfg = _make_config(self.tmp)
         self.logger = _make_logger(self.cfg)
         self.reg = LocalServiceRegistry(self.logger)
-        self.reg.register("test_svc", "127.0.0.1", 5000, ["/api/*"])
+        self.reg.register("test_svc", "127.0.0.1", 5000, ["/api/*"], verify_listening=False)
         self.executor = LocalAPIQueryExecutor(self.reg, self.logger)
 
     def tearDown(self):
@@ -679,12 +679,14 @@ class TestFrameworkLoading(unittest.TestCase):
         from aiohai.proxy.orchestrator import UnifiedSecureProxy
         proxy_mock = MagicMock()
         proxy_mock.config = self.cfg
-        proxy_mock.logger = self.logger
+        # Use a MagicMock for logger so we can assert on log_event calls
+        mock_logger = MagicMock()
+        proxy_mock.logger = mock_logger
 
         result = UnifiedSecureProxy._load_frameworks(proxy_mock, "BASE_POLICY")
         self.assertNotIn("INJECTED_PROMPT_SHOULD_NOT_APPEAR", result)
         # Should log a rejection
-        proxy_mock.logger.log_event.assert_called()
+        mock_logger.log_event.assert_called()
 
     def test_no_frameworks_returns_unchanged(self):
         """With no framework files, policy should be unchanged."""
@@ -894,7 +896,7 @@ class TestServiceRegistrySecurity(unittest.TestCase):
         self.cfg = _make_config(self.tmp)
         self.logger = _make_logger(self.cfg)
         self.reg = LocalServiceRegistry(self.logger)
-        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"])
+        self.reg.register("svc", "127.0.0.1", 5000, ["/api/*"], verify_listening=False)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -913,7 +915,7 @@ class TestServiceRegistrySecurity(unittest.TestCase):
 
     def test_ipv6_loopback_accepted(self):
         """::1 is also localhost and should be accepted if registered."""
-        self.reg.register("ipv6_svc", "::1", 5001, ["/test"])
+        self.reg.register("ipv6_svc", "::1", 5001, ["/test"], verify_listening=False)
         ok, svc = self.reg.validate_request("http://[::1]:5001/test")
         # Note: urllib.parse may handle IPv6 differently
         # This tests our intent at least
