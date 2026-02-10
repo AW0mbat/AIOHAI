@@ -25,6 +25,8 @@ from aiohai.core.version import __version__
 from aiohai.core.types import (
     SecurityError, SecurityLevel, ActionType, AlertSeverity,
     ApprovalTier, ApprovalStatus, UserRole,
+    # Approval Gate Taxonomy v3 (v5.2.0+)
+    SecurityGate, ActionCategory, TargetDomain, ApprovalLevel,
 )
 from aiohai.core.config import UnifiedConfig
 
@@ -32,5 +34,6 @@ __all__ = [
     '__version__',
     'SecurityError', 'SecurityLevel', 'ActionType', 'AlertSeverity',
     'ApprovalTier', 'ApprovalStatus', 'UserRole',
+    'SecurityGate', 'ActionCategory', 'TargetDomain', 'ApprovalLevel',
     'UnifiedConfig',
 ]
