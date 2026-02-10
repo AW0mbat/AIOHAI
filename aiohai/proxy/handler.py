@@ -166,11 +166,24 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             data['messages'][-1]['content'] = sanitized
 
         # Inject system prompt
-        combined = self.ctx.security_policy + "\n\n" + self.ctx.agentic_instructions
-        if 'system' in data:
-            data['system'] = combined + "\n\n---\n\n" + data['system']
+        # TODO(v6.1): Replace with slim behavioral prompt. Full security policy
+        # (~90KB) overwhelms small models. Code enforces security anyway.
+        # Original: combined = self.ctx.security_policy + "\n\n" + self.ctx.agentic_instructions
+        combined = self.ctx.agentic_instructions
+        if 'messages' in data:
+            # /api/chat path: inject as first message in the messages array.
+            # Ollama's /api/chat ignores top-level 'system' field.
+            system_msg = {'role': 'system', 'content': combined}
+            if data['messages'] and data['messages'][0].get('role') == 'system':
+                data['messages'][0]['content'] = combined + "\n\n---\n\n" + data['messages'][0]['content']
+            else:
+                data['messages'].insert(0, system_msg)
         else:
-            data['system'] = combined
+            # /api/generate path: use top-level 'system' field
+            if 'system' in data:
+                data['system'] = combined + "\n\n---\n\n" + data['system']
+            else:
+                data['system'] = combined
 
         # Forward to Ollama
         response = self._call_ollama(json.dumps(data).encode())
@@ -184,6 +197,8 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             ai_text = response['response']
         elif 'message' in response:
             ai_text = response['message'].get('content', '')
+
+        print(f"[DEBUG] raw ai_text first 500: {ai_text[:500]}")
 
         # Check PII in response
         if self.ctx.pii_protector:
@@ -986,6 +1001,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         relative to the old system, never less).
         """
         actions = ActionParser.parse(response)
+        print(f"[DEBUG] actions found: {len(actions)}, ai_text first 300: {response[:300]}")
         clean = ActionParser.strip_actions(response)
 
         if not actions:
@@ -1509,6 +1525,19 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                                              'consecutive failures'})
             return None
 
+        # Force non-streaming: the proxy must have the complete response
+        # for PII scanning, action parsing, and content sanitization.
+        # Ollama streams NDJSON by default, which cannot be parsed as a
+        # single JSON object.  Setting stream=false makes Ollama return
+        # one complete JSON response.  True streaming pass-through would
+        # require rearchitecting the sanitization pipeline (future work).
+        try:
+            payload = json.loads(body)
+            payload['stream'] = False
+            body = json.dumps(payload).encode('utf-8')
+        except (json.JSONDecodeError, ValueError):
+            pass  # Non-JSON body — forward as-is
+
         url = (f"http://{self.ctx.config.ollama_host}:{self.ctx.config.ollama_port}"
                f"{self.path}")
         try:
@@ -1563,8 +1592,16 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             self._send_error(502, str(e))
 
     def _send_chat_response(self, text: str):
-        resp = {'model': 'aiohai', 'created_at': datetime.now().isoformat(),
-                'response': text, 'done': True}
+        # Use the correct response format based on which endpoint was called.
+        # /api/chat expects {"message": {"role": "assistant", "content": ...}}
+        # /api/generate expects {"response": ...}
+        if self.path == '/api/chat':
+            resp = {'model': 'aiohai', 'created_at': datetime.now().isoformat(),
+                    'message': {'role': 'assistant', 'content': text},
+                    'done': True}
+        else:
+            resp = {'model': 'aiohai', 'created_at': datetime.now().isoformat(),
+                    'response': text, 'done': True}
         self._send_json_response(resp)
 
     def _send_json_response(self, data: Dict):

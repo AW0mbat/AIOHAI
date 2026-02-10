@@ -214,9 +214,12 @@ class ApprovalManager:
         """Timing-safe approval check with session validation."""
         with self.lock:
             # Timing-safe lookup
+            # Look up by prefix — users see only the first 8 chars of the ID.
+            # Use constant-time comparison on the prefix portion for safety.
             found_id = None
             for pending_id in self.pending.keys():
-                if hmac.compare_digest(pending_id, approval_id):
+                prefix = pending_id[:len(approval_id)]
+                if hmac.compare_digest(prefix, approval_id):
                     found_id = pending_id
                     break
 

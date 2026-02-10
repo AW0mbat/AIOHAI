@@ -186,7 +186,7 @@ class UnifiedSecureProxy:
             from aiohai.core.config_manager import ConfigManager
             from aiohai.proxy.admin_api import AdminAPIServer
             self.config_manager = ConfigManager(
-                matrix_adjuster=self.matrix_adjuster,
+                adjuster=self.matrix_adjuster,
                 change_request_log=self.change_request_log,
             )
             self.admin_api = AdminAPIServer(

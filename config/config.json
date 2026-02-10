@@ -15,7 +15,7 @@
     "proxy": {
         "_comment": "Settings for AIOHAI proxy",
         "enabled": true,
-        "listen_host": "127.0.0.1",
+        "listen_host": "0.0.0.0",
         "listen_port": 11435,
         "inject_system_prompt": true,
         "scan_for_injection": true,
