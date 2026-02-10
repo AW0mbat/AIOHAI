@@ -18,7 +18,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Optional, Tuple
 
-from aiohai.core.types import AlertSeverity, ApprovalTier, Verdict
+from aiohai.core.types import (
+    AlertSeverity, ApprovalTier, Verdict,
+    SecurityGate, ApprovalLevel, ActionCategory, TargetDomain,
+)
 from aiohai.core.patterns import OFFICE_SCANNABLE_EXTENSIONS
 from aiohai.core.templates import HELP_TEXT
 from aiohai.core.crypto.classifier import OperationClassifier
@@ -394,10 +397,16 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 return "✅ No non-destructive actions to execute."
 
         # SECURITY FIX (F-001): Separate hardware-gated actions — cannot be batch-approved
-        hw_actions = {k: v for k, v in pending.items()
-                         if v.get('hardware_tier', 0) >= 3}
-        normal_actions = {k: v for k, v in pending.items()
-                          if v.get('hardware_tier', 0) < 3}
+        # Phase 1B: Use taxonomy gate metadata when available, fall back to hardware_tier
+        hw_actions = {}
+        normal_actions = {}
+        for k, v in pending.items():
+            gate_name = v.get('gate', '')
+            hw_tier = v.get('hardware_tier', 0)
+            if gate_name in ('PHYSICAL', 'BIOMETRIC') or hw_tier >= 3:
+                hw_actions[k] = v
+            else:
+                normal_actions[k] = v
 
         results = []
 
@@ -407,8 +416,15 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 f"and cannot be batch-confirmed:**\n")
             for aid, action in hw_actions.items():
                 short_id = aid[:8]
-                tier_lvl = action.get('hardware_tier', 3)
-                key_type = "🔑 hardware key" if tier_lvl >= 4 else "🔐 FIDO2"
+                gate_name = action.get('gate', '')
+                if gate_name == 'PHYSICAL':
+                    key_type = "🔒 physical NFC tap"
+                elif gate_name == 'BIOMETRIC':
+                    key_type = "🔐 authenticator challenge"
+                else:
+                    # Legacy fallback
+                    tier_lvl = action.get('hardware_tier', 3)
+                    key_type = "🔑 hardware key" if tier_lvl >= 4 else "🔐 FIDO2"
                 results.append(
                     f"  {key_type} `{short_id}` **{action['type']}** — "
                     f"`{os.path.basename(action['target'])}`")
@@ -465,6 +481,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
     def _require_hardware_approval(self, action: dict) -> Tuple[bool, str]:
         """Block until FIDO2 hardware approval is received, or return failure.
 
+        Phase 1B: Gate-aware. Routes to authenticate_physical() for PHYSICAL
+        gate actions, authenticate_biometric() for BIOMETRIC gate actions.
+
         Returns:
             (True, "") if hardware approval granted
             (False, user_message) if denied, timed out, or unavailable
@@ -482,11 +501,11 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
 
         atype = action['type']
         target = action.get('target', '')
-        # Use the stored tier level (3 or 4), defaulting to 3
-        tier_level = action.get('hardware_tier', 3)
+        # Determine gate from taxonomy metadata, with legacy fallback
+        gate_name = action.get('gate', '')
+        hardware_tier = action.get('hardware_tier', 3)
 
         try:
-            # Create the hardware approval request
             # H-4 FIX: Sanitize content preview before sending to FIDO2 UI
             raw_preview = (action.get('content', '') or '')[:200]
             if hasattr(self, 'content_sanitizer') and self.content_sanitizer:
@@ -496,34 +515,52 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 sanitized_preview = re.sub(
                     r'[^\w\s.,;:!?\-/\\()\'\"=+]', '', raw_preview)
 
-            req = fido2.request_approval(
-                operation_type=atype,
-                target=target,
-                description=f"{atype} on {os.path.basename(target)}",
-                tier=tier_level,
-                metadata={'content_preview': sanitized_preview}
-            )
-            request_id = req.get('request_id', '')
-            approval_url = req.get('approval_url', '')
+            description = f"{atype} on {os.path.basename(target)}"
+            metadata = {'content_preview': sanitized_preview}
 
-            self.ctx.logger.log_event("FIDO2_REQUESTED", AlertSeverity.INFO, {
-                'action_type': atype, 'target': target[:200],
-                'request_id': request_id[:16],
-            })
-
-            # Poll until approved, rejected, or timeout
-            timeout = getattr(self.ctx.config, 'fido2_poll_timeout', 300)
-            result = fido2.wait_for_approval(
-                request_id,
-                timeout_seconds=timeout,
-                poll_interval=1.0,
-            )
+            # Phase 1B: Route to gate-specific method
+            if gate_name == 'PHYSICAL' or hardware_tier >= 4:
+                # PHYSICAL gate: NFC tap at server, no timeout
+                if hasattr(fido2, 'authenticate_physical'):
+                    result = fido2.authenticate_physical(
+                        operation_type=atype,
+                        target=target,
+                        description=description,
+                        metadata=metadata,
+                    )
+                else:
+                    # Fallback to legacy flow with tier=4
+                    result = self._legacy_fido2_flow(
+                        fido2, atype, target, description, 4, metadata)
+            elif gate_name == 'BIOMETRIC' or hardware_tier >= 3:
+                # BIOMETRIC gate: any authenticator, with timeout
+                timeout = action.get('approval_level', 6)
+                # Map level to timeout: 5→120, 6→60, 7→30
+                level_timeout = {5: 120, 6: 60, 7: 30}.get(
+                    action.get('approval_level', 6), 60)
+                if hasattr(fido2, 'authenticate_biometric'):
+                    result = fido2.authenticate_biometric(
+                        operation_type=atype,
+                        target=target,
+                        description=description,
+                        metadata=metadata,
+                        timeout_seconds=level_timeout,
+                    )
+                else:
+                    # Fallback to legacy flow with tier=3
+                    result = self._legacy_fido2_flow(
+                        fido2, atype, target, description, 3, metadata)
+            else:
+                # Generic fallback
+                result = self._legacy_fido2_flow(
+                    fido2, atype, target, description, hardware_tier, metadata)
 
             status = result.get('status', 'unknown')
 
             if status == 'approved':
                 self.ctx.logger.log_event("FIDO2_APPROVED", AlertSeverity.INFO, {
                     'action_type': atype, 'target': target[:200],
+                    'gate': gate_name or 'LEGACY',
                     'approved_by': result.get('approved_by', 'unknown'),
                     'authenticator': result.get('authenticator_used', 'unknown'),
                 })
@@ -532,6 +569,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             elif status == 'rejected':
                 self.ctx.logger.log_event("FIDO2_REJECTED", AlertSeverity.WARNING, {
                     'action_type': atype, 'target': target[:200],
+                    'gate': gate_name or 'LEGACY',
                 })
                 return False, ("❌ Hardware approval **rejected**. "
                                "Action will not execute.")
@@ -539,20 +577,51 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             else:  # expired, timeout, error
                 self.ctx.logger.log_event("FIDO2_TIMEOUT", AlertSeverity.WARNING, {
                     'action_type': atype, 'target': target[:200],
+                    'gate': gate_name or 'LEGACY',
                     'status': status,
                 })
                 return False, (
-                    f"⏰ Hardware approval **timed out** ({timeout}s). "
+                    f"⏰ Hardware approval **timed out**. "
                     f"Action will not execute. Re-request and try again."
                 )
 
         except Exception as e:
             self.ctx.logger.log_event("FIDO2_ERROR", AlertSeverity.HIGH, {
                 'action_type': atype, 'target': target[:200],
+                'gate': gate_name or 'LEGACY',
                 'error': str(e),
             })
             return False, (f"❌ Hardware approval failed: {e}\n\n"
                            f"Action will not execute.")
+
+    def _legacy_fido2_flow(self, fido2, atype: str, target: str,
+                           description: str, tier: int,
+                           metadata: dict) -> dict:
+        """Legacy FIDO2 approval flow (pre-taxonomy compatibility).
+
+        Used as fallback when the FIDO2 client doesn't have
+        authenticate_physical/authenticate_biometric methods.
+        """
+        req = fido2.request_approval(
+            operation_type=atype,
+            target=target,
+            description=description,
+            tier=tier,
+            metadata=metadata,
+        )
+        request_id = req.get('request_id', '')
+
+        self.ctx.logger.log_event("FIDO2_REQUESTED", AlertSeverity.INFO, {
+            'action_type': atype, 'target': target[:200],
+            'request_id': request_id[:16],
+        })
+
+        timeout = getattr(self.ctx.config, 'fido2_poll_timeout', 300)
+        return fido2.wait_for_approval(
+            request_id,
+            timeout_seconds=timeout,
+            poll_interval=1.0,
+        )
 
     def _execute_approved(self, aid: str) -> str:
         action = self.ctx.approval_mgr.approve(aid,
@@ -670,7 +739,13 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             return f"❌ API query failed: {result}"
 
     def _process_response(self, response: str, user_request: str) -> str:
-        """Process LLM response: extract actions, validate, create approval cards."""
+        """Process LLM response: extract actions, validate, create approval cards.
+
+        Phase 1B: Uses taxonomy pipeline (ActionCategory × TargetDomain → ApprovalLevel)
+        as the primary classification. Falls back to OperationClassifier for additional
+        escalation (belt-and-suspenders: taxonomy can only make things MORE restrictive
+        relative to the old system, never less).
+        """
         actions = ActionParser.parse(response)
         clean = ActionParser.strip_actions(response)
 
@@ -687,6 +762,12 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         for a in actions:
             atype, target, content = a['type'], a['target'], a['content']
 
+            # Taxonomy fields from ActionParser (Phase 1B)
+            approval_level = a['approval_level']
+            gate = a['gate']
+            category = a['category']
+            domain = a['domain']
+
             # ----- Reject unknown action types -----
             if atype not in _KNOWN_ACTION_TYPES:
                 self.ctx.logger.log_blocked(
@@ -699,16 +780,38 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 )
                 continue
 
-            # ----- Pre-approval validation -----
-            hardware_tier = 0  # 0 = no hardware, 3 = any FIDO2, 4 = hardware key only
+            # ----- DENY gate: hard block -----
+            if gate == SecurityGate.DENY:
+                self.ctx.logger.log_blocked(
+                    "DENY_GATE", target,
+                    f"Action {category.value}:{domain.value} is in DENY gate "
+                    f"(level {approval_level.value}: {approval_level.name})")
+                if approval_level == ApprovalLevel.HARDBLOCK:
+                    lines.append(
+                        f"\n\n---\n### 🚫 Blocked: {atype}"
+                        f"\n\nThis action is not permitted. "
+                        f"Target `{target}` is restricted by security policy."
+                    )
+                else:
+                    # SOFTBLOCK: explain + offer change request log
+                    lines.append(
+                        f"\n\n---\n### 🚫 Blocked: {atype}"
+                        f"\n\nThis action on `{target}` is restricted by security policy. "
+                        f"You can log a change request to enable this in the future."
+                    )
+                continue
+
+            # ----- Pre-approval validation (existing security checks) -----
             self._pending_pii_warning = None
+            pre_validation_failed = False
 
             if atype in ('READ', 'WRITE', 'DELETE', 'LIST') and target:
                 result = self._pre_validate_file_action(atype, target, content)
                 if result is None:
-                    continue  # Was blocked — message already appended to lines
-                hardware_tier, lines_to_add = result
-                lines.extend(lines_to_add)
+                    pre_validation_failed = True
+                else:
+                    _, extra_lines = result
+                    lines.extend(extra_lines)
 
             elif atype == 'COMMAND' and target:
                 is_safe, reason = self.ctx.executor.command_validator.validate(target)
@@ -718,41 +821,44 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                         f"\n\n---\n### 🚫 Blocked: COMMAND"
                         f"\n\nCommand rejected by security policy: **{reason}**"
                     )
-                    continue
-                hardware_tier = 0
-                self._pending_pii_warning = None
+                    pre_validation_failed = True
 
             elif atype == 'API_QUERY' and target:
                 result = self._pre_validate_api_query(atype, target, content)
                 if result is None:
-                    continue  # Blocked
-                hardware_tier, _ = result
+                    pre_validation_failed = True
 
-            else:
-                hardware_tier = 0
-                self._pending_pii_warning = None
+            if pre_validation_failed:
+                continue
 
-            # Use OperationClassifier to escalate tier if action type warrants it
-            classified_tier = OperationClassifier.classify(atype, target, content)
-            if classified_tier.value > hardware_tier:
-                hardware_tier = classified_tier.value
-            # Only tiers 3+ require hardware approval
-            if hardware_tier < 3:
-                hardware_tier = 0
+            # ----- Legacy escalation (belt-and-suspenders) -----
+            # OperationClassifier may escalate to hardware tier even if the
+            # taxonomy didn't. This keeps backward compatibility and ensures
+            # the new system is never LESS restrictive than the old one.
+            legacy_tier = OperationClassifier.classify(atype, target, content)
+            if legacy_tier.value >= 3 and not gate.is_hardware:
+                # Legacy classifier says hardware required but taxonomy says
+                # software/passive. Escalate to biometric gate minimum.
+                approval_level = ApprovalLevel.BIOMETRIC_STANDARD
+                gate = SecurityGate.BIOMETRIC
 
-            # ----- Tier 1: Auto-execute (logged, no approval needed) -----
-            # Both the classifier AND pre-validation must agree this is low-risk.
-            # Pre-validation can escalate hardware_tier for sensitive paths/APIs
-            # even when the classifier says TIER_1.
-            if classified_tier.value <= 1 and hardware_tier == 0:
+            # Derive hardware_tier for backward-compat with existing FIDO2 flow
+            hardware_tier = 0
+            if gate == SecurityGate.PHYSICAL:
+                hardware_tier = 4  # roaming key only
+            elif gate == SecurityGate.BIOMETRIC:
+                hardware_tier = 3  # any FIDO2
+
+            # ----- PASSIVE gate: auto-execute -----
+            if approval_level.is_passive:
                 if atype == 'API_QUERY':
-                    # API_QUERY has its own execution path
                     result = self._execute_api_query(
                         {'type': atype, 'target': target, 'content': content})
                     self.ctx.logger.log_event(
                         "AUTO_EXECUTED", AlertSeverity.INFO, {
                             'action_type': atype, 'target': target[:200],
-                            'tier': 1,
+                            'level': approval_level.value,
+                            'gate': gate.name,
                         })
                     lines.append(result)
                 else:
@@ -765,7 +871,9 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                         self.ctx.logger.log_event(
                             "AUTO_EXECUTED", AlertSeverity.INFO, {
                                 'action_type': atype, 'target': target[:200],
-                                'tier': 1, 'success': ok,
+                                'level': approval_level.value,
+                                'gate': gate.name,
+                                'success': ok,
                             })
                         lines.append(self._format_single_result(
                             atype, target, ok, out))
@@ -773,12 +881,19 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                         lines.append(f"⚠️ Unknown action type: {atype}")
                 continue
 
-            # ----- Tier 2+: Create approval request -----
+            # ----- SOFTWARE / BIOMETRIC / PHYSICAL gate: create approval -----
+            taxonomy_dict = {
+                'category': category,
+                'domain': domain,
+                'approval_level': approval_level,
+                'gate': gate,
+            }
             try:
                 # H-5 FIX: Always pass session_id to enforce session binding
                 aid = self.ctx.approval_mgr.create_request(
                     atype, target, content,
-                    session_id=self.ctx.logger.session_id
+                    session_id=self.ctx.logger.session_id,
+                    taxonomy=taxonomy_dict,
                 )
             except Exception as e:
                 lines.append(f"\n\n---\n### 🚫 Action Blocked\n\n{str(e)}")
@@ -794,33 +909,34 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
             action_ids.append((short_id, atype, target))
             card = self._format_action_card(atype, target, content, short_id)
 
-            # Prepend tier warning to the action card
-            if hardware_tier >= 3:
-                tier3_reason = ""
+            # Gate-specific approval card decoration
+            if gate == SecurityGate.PHYSICAL:
+                gate_reason = (
+                    f"\n\nThis action requires **physical NFC tap at the server**. "
+                    f"Walk to the server and tap your NFC key."
+                )
                 if self._pending_pii_warning:
-                    tier3_reason = (
-                        f"\n\n{self._pending_pii_warning}"
-                        f"\n\nThis document contains sensitive data. "
-                    )
-                else:
-                    tier3_reason = (
-                        f"\n\nThis action targets sensitive data. "
-                    )
-                if hardware_tier >= 4:
-                    auth_msg = "**physical security key tap** (biometric not accepted)"
-                    icon = "🔑"
-                else:
-                    auth_msg = (
-                        "**FIDO2 hardware key tap** or **biometric verification**")
-                    icon = "🔐"
+                    gate_reason = f"\n\n{self._pending_pii_warning}" + gate_reason
                 card = (
-                    f"\n\n---\n### {icon} Hardware Approval Required"
-                    f"{tier3_reason}"
+                    f"\n\n---\n### 🔒 Physical Authentication Required"
+                    f"{gate_reason}"
+                    + card
+                )
+            elif gate == SecurityGate.BIOMETRIC:
+                auth_msg = "**FIDO2 hardware key tap** or **biometric verification**"
+                gate_reason = (
+                    f"\n\nThis action targets sensitive data. "
                     f"Approval requires {auth_msg}."
+                )
+                if self._pending_pii_warning:
+                    gate_reason = f"\n\n{self._pending_pii_warning}" + gate_reason
+                card = (
+                    f"\n\n---\n### 🔐 Authenticator Challenge Required"
+                    f"{gate_reason}"
                     + card
                 )
             elif self._pending_pii_warning:
-                # Non-critical PII — show warning but don't require FIDO2
+                # SOFTWARE gate with PII warning
                 card = (
                     f"\n\n---\n### ⚠️ Document Content Notice"
                     f"\n\n{self._pending_pii_warning}"
@@ -839,18 +955,19 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         """Pre-validate a file action (READ/WRITE/DELETE/LIST).
 
         Returns None if blocked (caller should skip this action).
-        Returns (hardware_tier, extra_lines) if valid.
-        hardware_tier: 0 = no hardware, 3 = any FIDO2, 4 = hardware key only
+        Returns (0, extra_lines) if valid.
+
+        Phase 1B: No longer computes hardware_tier — the taxonomy pipeline
+        in _process_response handles gate classification. This method only
+        does safety validation (path checks, macro blocking, PII scanning).
         """
         is_safe, resolved, reason = self.ctx.executor.path_validator.validate(target)
         if not is_safe:
             self.ctx.logger.log_blocked(f"PRE_APPROVAL_{atype}", target, reason)
-            # Return None to signal blocked - but we need to communicate the line
-            # Use a side-effect pattern matching the monolith
             return None  # Caller checks for None
 
-        # Tier-3 paths: still create approval but tag it for FIDO2
-        hardware_tier = 3 if (reason == "Tier 3 required") else 0
+        # Phase 1B: No longer computes hardware_tier from path validation.
+        # The taxonomy pipeline determines the gate based on (category, domain).
 
         # GAP 8 FIX: Block macro-enabled extensions at pre-approval
         if atype == 'WRITE' and self.ctx.executor.macro_blocker:
@@ -859,26 +976,22 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                 self.ctx.logger.log_blocked("PRE_APPROVAL_MACRO", target, ext_reason)
                 return None
 
-        # GAP 7 FIX: PII pre-scan for Office documents → TIER 3 escalation
+        # GAP 7 FIX: PII pre-scan for Office documents
         target_ext = os.path.splitext(target)[1].lower()
         if (atype == 'WRITE' and target_ext in OFFICE_SCANNABLE_EXTENSIONS
                 and self.ctx.executor.doc_scanner and content):
             pre_scan = self.ctx.executor.doc_scanner.scan(
                 content, file_type=target_ext,
                 filename=os.path.basename(target))
-            if pre_scan.get('should_block'):
-                hardware_tier = max(hardware_tier, 3)
+            if pre_scan.get('should_block') or pre_scan.get('findings'):
                 pii_summary = self.ctx.executor.doc_scanner.get_scan_summary(pre_scan)
                 self._pending_pii_warning = pii_summary
-            elif pre_scan.get('findings'):
-                self._pending_pii_warning = \
-                    self.ctx.executor.doc_scanner.get_scan_summary(pre_scan)
             else:
                 self._pending_pii_warning = None
         else:
             self._pending_pii_warning = None
 
-        return hardware_tier, []
+        return 0, []
 
     def _pre_validate_api_query(self, atype: str, target: str, content: str):
         """Pre-validate an API_QUERY action.

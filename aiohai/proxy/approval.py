@@ -16,10 +16,15 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from aiohai.core.types import SecurityError, AlertSeverity
+from aiohai.core.types import (
+    SecurityError, AlertSeverity,
+    ActionCategory, TargetDomain, ApprovalLevel, SecurityGate,
+)
 from aiohai.core.constants import APPROVAL_ID_BYTES
 from aiohai.core.config import UnifiedConfig
 from aiohai.core.audit.logger import SecurityLogger
+from aiohai.core.access.target_classifier import TargetClassifier
+from aiohai.core.access.tier_matrix import TierMatrix, TIER_MATRIX
 
 __all__ = ['ApprovalManager']
 
@@ -29,11 +34,13 @@ class ApprovalManager:
 
     MAX_PENDING_PER_SESSION = 10  # Prevent approval flooding
 
-    def __init__(self, config: UnifiedConfig, logger: SecurityLogger):
+    def __init__(self, config: UnifiedConfig, logger: SecurityLogger,
+                 tier_matrix: TierMatrix = None):
         self.config = config
         self.logger = logger
         self.pending: Dict[str, Dict] = {}
         self.lock = threading.Lock()
+        self.tier_matrix = tier_matrix or TIER_MATRIX
 
         # Sensitive operation detector (optional)
         self.sensitive_detector = None
@@ -43,9 +50,52 @@ class ApprovalManager:
         except ImportError:
             pass
 
+    def classify_action(self, action_type: str, target: str,
+                        content: str = "") -> Dict:
+        """Classify an action through the taxonomy pipeline.
+
+        Maps legacy action type → ActionCategory, classifies target → TargetDomain,
+        looks up (category, domain) → ApprovalLevel in the tier matrix.
+
+        Returns dict with:
+            category: ActionCategory enum
+            domain: TargetDomain enum
+            approval_level: ApprovalLevel enum
+            gate: SecurityGate enum
+        """
+        category = ActionCategory.from_legacy_action_type(action_type)
+
+        # Determine classification hint from action type
+        hint_map = {
+            'READ': 'file', 'WRITE': 'file', 'DELETE': 'file', 'LIST': 'file',
+            'FILE_READ': 'file', 'FILE_WRITE': 'file',
+            'FILE_DELETE': 'file', 'DIRECTORY_LIST': 'file',
+            'COMMAND': 'command', 'COMMAND_EXEC': 'command',
+            'API_QUERY': 'api', 'LOCAL_API_QUERY': 'api',
+            'DOCUMENT_OP': 'office',
+        }
+        hint = hint_map.get(action_type)
+
+        domain = TargetClassifier.classify(
+            target, hint=hint, action_type=action_type)
+        approval_level = self.tier_matrix.lookup(category, domain)
+
+        return {
+            'category': category,
+            'domain': domain,
+            'approval_level': approval_level,
+            'gate': approval_level.gate,
+        }
+
     def create_request(self, action_type: str, target: str, content: str,
-                       user_id: str = "", session_id: str = "") -> str:
+                       user_id: str = "", session_id: str = "",
+                       taxonomy: Dict = None) -> str:
         """Create an approval request. session_id MUST be provided by the caller.
+
+        Args:
+            taxonomy: Optional pre-computed taxonomy dict with keys:
+                category, domain, approval_level, gate.
+                If not provided, classify_action() is called automatically.
 
         Raises SecurityError if session_id is empty (H-5 fix).
         """
@@ -61,6 +111,10 @@ class ApprovalManager:
                     f"Too many pending approvals ({session_pending}). "
                     "Please review existing actions with `PENDING` command."
                 )
+
+        # Compute taxonomy if not provided
+        if taxonomy is None:
+            taxonomy = self.classify_action(action_type, target, content)
 
         approval_id = secrets.token_hex(APPROVAL_ID_BYTES)
         expires = datetime.now() + timedelta(minutes=self.config.approval_expiry_minutes)
@@ -86,11 +140,18 @@ class ApprovalManager:
                 'session_id': session_id,
                 'sensitivity': sensitivity,
                 'created': datetime.now().isoformat(),
-                'expires': expires.isoformat()
+                'expires': expires.isoformat(),
+                # Taxonomy metadata (Phase 1B)
+                'category': taxonomy['category'].value,
+                'domain': taxonomy['domain'].value,
+                'approval_level': taxonomy['approval_level'].value,
+                'gate': taxonomy['gate'].name,
             }
 
         self.logger.log_event("APPROVAL_CREATED", AlertSeverity.INFO,
                              {'id': approval_id[:8], 'type': action_type,
+                              'gate': taxonomy['gate'].name,
+                              'level': taxonomy['approval_level'].value,
                               'sensitive': len(sensitivity) > 0})
         return approval_id
 

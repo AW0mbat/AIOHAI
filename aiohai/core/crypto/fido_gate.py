@@ -813,6 +813,69 @@ class FIDO2ApprovalClient:
                       'metadata': metadata or {}})
             return resp.json()
 
+    # =========================================================================
+    # Phase 1B: Gate-aware authentication methods
+    # =========================================================================
+
+    def authenticate_physical(self, operation_type: str, target: str,
+                              description: str, metadata: dict = None,
+                              timeout_seconds: int = None) -> dict:
+        """Request PHYSICAL gate authentication (NFC tap at server).
+
+        The PHYSICAL gate proves the authorized person is physically present
+        at the server. This method sets tier=4 to require a roaming key
+        (no platform/biometric authenticator) and uses no timeout by default
+        (the user might need to walk to the server).
+
+        Returns dict with 'status' key: 'approved', 'rejected', 'timeout', etc.
+        """
+        # Physical gate: require roaming key, no biometric allowed
+        req = self.request_approval(
+            operation_type=operation_type,
+            target=target,
+            description=description,
+            tier=4,  # Tier 4 = roaming hardware key only (NFC/USB)
+            metadata={**(metadata or {}), '_gate': 'PHYSICAL'},
+        )
+        request_id = req.get('request_id', '')
+
+        # No default timeout for physical gate — user might be walking to server
+        if timeout_seconds is None:
+            timeout_seconds = 600  # 10 minute generous default
+
+        return self.wait_for_approval(
+            request_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval=1.0,
+        )
+
+    def authenticate_biometric(self, operation_type: str, target: str,
+                               description: str, metadata: dict = None,
+                               timeout_seconds: int = 120) -> dict:
+        """Request BIOMETRIC gate authentication (any registered authenticator).
+
+        The BIOMETRIC gate proves the authorized person possesses their
+        registered authenticator and is actively choosing to approve. Any
+        FIDO2-compatible device works (fingerprint, Face ID, security key).
+
+        Returns dict with 'status' key: 'approved', 'rejected', 'timeout', etc.
+        """
+        # Biometric gate: any FIDO2 authenticator (platform or roaming)
+        req = self.request_approval(
+            operation_type=operation_type,
+            target=target,
+            description=description,
+            tier=3,  # Tier 3 = any FIDO2 (platform biometric or roaming key)
+            metadata={**(metadata or {}), '_gate': 'BIOMETRIC'},
+        )
+        request_id = req.get('request_id', '')
+
+        return self.wait_for_approval(
+            request_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval=1.0,
+        )
+
     def check_status(self, request_id: str) -> dict:
         """Check the status of an approval request."""
         if self._mode == 'direct':
