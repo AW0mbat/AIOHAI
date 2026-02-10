@@ -4,9 +4,12 @@ Approval Manager — Manages action approval lifecycle.
 
 Handles creation, validation, approval, rejection, and expiration of
 action requests. Includes session binding, rate limiting, content
-integrity verification, and sensitivity detection.
+integrity verification, sensitivity detection, and session elevation
+consultation.
 
 Phase 5 extraction from proxy/aiohai_proxy.py.
+Phase 2: Session elevation integration — consult SessionManager before
+         requiring gate-level approval.
 """
 
 import hashlib
@@ -14,7 +17,7 @@ import hmac
 import secrets
 import threading
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from aiohai.core.types import (
     SecurityError, AlertSeverity,
@@ -35,12 +38,16 @@ class ApprovalManager:
     MAX_PENDING_PER_SESSION = 10  # Prevent approval flooding
 
     def __init__(self, config: UnifiedConfig, logger: SecurityLogger,
-                 tier_matrix: TierMatrix = None):
+                 tier_matrix: TierMatrix = None,
+                 session_manager=None):
         self.config = config
         self.logger = logger
         self.pending: Dict[str, Dict] = {}
         self.lock = threading.Lock()
         self.tier_matrix = tier_matrix or TIER_MATRIX
+
+        # Phase 2: Session elevation manager (optional)
+        self.session_manager = session_manager
 
         # Sensitive operation detector (optional)
         self.sensitive_detector = None
@@ -49,6 +56,53 @@ class ApprovalManager:
             self.sensitive_detector = SensitiveOperationDetector()
         except ImportError:
             pass
+
+    def check_session_elevation(
+        self, category: ActionCategory, domain: TargetDomain,
+        default_level: ApprovalLevel
+    ) -> Tuple[ApprovalLevel, Optional[str]]:
+        """Check if an active session covers this action, returning the
+        effective approval level.
+
+        Phase 2: Called by the handler before creating approval cards.
+        If a matching session exists, the action executes at the session's
+        elevated level instead of the default gate level.
+
+        Args:
+            category: The action's ActionCategory.
+            domain: The action's TargetDomain.
+            default_level: The level from the tier matrix (used if no session).
+
+        Returns:
+            (effective_level, elevation_session_id) where elevation_session_id
+            is the session ID if elevated, None if using default level.
+        """
+        if self.session_manager is None:
+            return default_level, None
+
+        result = self.session_manager.check_elevation(category, domain)
+        if result is None:
+            return default_level, None
+
+        session, elevated_level = result
+        self.logger.log_event("SESSION_ELEVATION_APPLIED", AlertSeverity.INFO, {
+            'session_id': session.session_id[:8],
+            'category': category.value,
+            'domain': domain.value,
+            'default_level': default_level.value,
+            'elevated_level': elevated_level.value,
+            'actions_remaining': session.actions_remaining,
+        })
+        return elevated_level, session.session_id
+
+    def build_session_plan(self, actions: List[Dict]) -> Optional[Dict]:
+        """Build a session plan from parsed actions (delegates to SessionManager).
+
+        Returns None if no session manager or no plan needed.
+        """
+        if self.session_manager is None:
+            return None
+        return self.session_manager.build_session_plan(actions)
 
     def classify_action(self, action_type: str, target: str,
                         content: str = "") -> Dict:

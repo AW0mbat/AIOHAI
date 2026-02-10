@@ -148,6 +148,17 @@ class UnifiedSecureProxy:
             doc_audit_logger=self.doc_audit_logger)
         self.approval_mgr = ApprovalManager(self.config, self.logger)
 
+        # Phase 2: Session elevation manager
+        self.session_manager = None
+        try:
+            from aiohai.core.trust.session import SessionManager
+            from aiohai.core.trust.session_store import SessionStore
+            session_store = SessionStore()
+            self.session_manager = SessionManager(store=session_store)
+            self.approval_mgr.session_manager = self.session_manager
+        except ImportError:
+            pass
+
         # Initialize HSM
         self.hsm_manager = None
         if _HSM_AVAILABLE and self.config.hsm_enabled:
@@ -772,6 +783,7 @@ class UnifiedSecureProxy:
             graph_api_registry=self.graph_api_registry,
             integrity_verifier=self.integrity,
             ollama_breaker=OllamaCircuitBreaker(),
+            session_manager=self.session_manager,
         )
         print("  ✓ Configured")
         return True

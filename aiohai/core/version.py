@@ -15,7 +15,7 @@ Usage:
 
 # The official AIOHAI package version
 # Update this when releasing new versions
-__version__ = "5.0.0"
+__version__ = "5.3.0"
 
 
 # =============================================================================

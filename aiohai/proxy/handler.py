@@ -43,6 +43,7 @@ class HandlerContext:
         'credential_redactor', 'sensitive_detector',
         'api_query_executor', 'graph_api_registry', 'ollama_breaker',
         'hsm_manager', 'fido2_client', 'fido2_server', 'integrity_verifier',
+        'session_manager',  # Phase 2: Session elevation manager
     )
 
     def __init__(self, **kwargs):
@@ -247,6 +248,27 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         match = re.match(r'^REJECT\s+([A-Fa-f0-9]+)$', m)
         if match:
             aid = match.group(1).lower()
+            # Phase 2: Check if this rejection triggers a session circuit-breaker
+            session_mgr = getattr(self.ctx, 'session_manager', None)
+            if session_mgr and self.ctx.approval_mgr.pending:
+                # Look up the pending action to find its taxonomy
+                for pid, paction in self.ctx.approval_mgr.pending.items():
+                    if pid.startswith(aid) or pid == aid:
+                        cat_val = paction.get('category')
+                        dom_val = paction.get('domain')
+                        if cat_val and dom_val:
+                            try:
+                                cat = ActionCategory(cat_val)
+                                dom = TargetDomain(dom_val)
+                                active_session = session_mgr.get_session_for_scope(
+                                    cat, dom)
+                                if active_session:
+                                    session_mgr.record_rejection(
+                                        active_session.session_id)
+                            except (ValueError, KeyError):
+                                pass
+                        break
+
             if self.ctx.approval_mgr.reject(aid):
                 if self.ctx.transparency_tracker:
                     self.ctx.transparency_tracker.record_approval(False)
@@ -310,6 +332,16 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         # HELP - show available commands
         if m == 'HELP':
             return self._show_help()
+
+        # SESSION - show active sessions (Phase 2)
+        if m in ('SESSION', 'SESSIONS'):
+            return self._show_sessions()
+
+        # ENDSESSION - close a specific or all sessions (Phase 2)
+        match = re.match(r'^ENDSESSION(?:\s+(.+))?$', m)
+        if match:
+            target_id = match.group(1)
+            return self._end_session(target_id)
 
         return None
 
@@ -382,6 +414,67 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
     def _show_help(self) -> str:
         """Show available user commands."""
         return HELP_TEXT
+
+    def _show_sessions(self) -> str:
+        """Show active elevation sessions (Phase 2)."""
+        session_mgr = getattr(self.ctx, 'session_manager', None)
+        if session_mgr is None:
+            return "ℹ️ Session elevation not available."
+
+        active = session_mgr.get_active_sessions()
+        if not active:
+            return "✅ No active elevation sessions."
+
+        lines = ["**Active Elevation Sessions:**\n"]
+        for session in active:
+            scope_str = ", ".join(str(s) for s in sorted(session.scope, key=str))
+            remaining_s = int(session.time_remaining_seconds)
+            remaining_m = remaining_s // 60
+            remaining_s_mod = remaining_s % 60
+            lines.append(
+                f"🔓 **{session.session_id[:8]}** — "
+                f"{session.gate_authenticated.name} gate"
+            )
+            lines.append(
+                f"  Scope: `{scope_str}`"
+            )
+            lines.append(
+                f"  Actions: {session.actions_used}/{session.max_actions} used "
+                f"· {remaining_m}m {remaining_s_mod}s remaining"
+            )
+            lines.append(
+                f"  Elevated to: {session.elevated_level.name} "
+                f"(level {session.elevated_level.value})"
+            )
+            lines.append("")
+
+        lines.append("End a session: `ENDSESSION <id>` or `ENDSESSION ALL`")
+        return "\n".join(lines)
+
+    def _end_session(self, target_id: Optional[str] = None) -> str:
+        """End one or all elevation sessions (Phase 2)."""
+        session_mgr = getattr(self.ctx, 'session_manager', None)
+        if session_mgr is None:
+            return "ℹ️ Session elevation not available."
+
+        if target_id and target_id.upper() == 'ALL':
+            session_mgr.close_all(reason="user_closed_all")
+            return "🔒 All elevation sessions ended."
+
+        if target_id:
+            # Find session by prefix match
+            target_lower = target_id.lower().strip()
+            active = session_mgr.get_active_sessions()
+            for session in active:
+                if session.session_id.startswith(target_lower) or \
+                   session.session_id[:8] == target_lower:
+                    session_mgr.close_session(session.session_id, "user_closed")
+                    return f"🔒 Session `{session.session_id[:8]}` ended."
+            return f"⚠️ No active session matching `{target_id}`"
+
+        # No target specified — close all
+        session_mgr.close_all(reason="user_closed_all")
+        return "🔒 All elevation sessions ended."
 
     def _execute_all_pending(self, skip_destructive: bool = False) -> str:
         """Execute all pending actions in sequence, optionally skipping destructive."""
@@ -880,6 +973,74 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
                     else:
                         lines.append(f"⚠️ Unknown action type: {atype}")
                 continue
+
+            # ----- Phase 2: Session elevation check -----
+            # Before creating an approval card, check if an active session
+            # covers this (category, domain). If so, execute at the session's
+            # elevated level instead of requiring gate-level auth.
+            effective_level, elevation_session_id = (
+                self.ctx.approval_mgr.check_session_elevation(
+                    category, domain, approval_level
+                )
+            )
+
+            if elevation_session_id is not None and effective_level.is_passive:
+                # Session elevation → auto-execute at elevated level
+                session_mgr = getattr(self.ctx, 'session_manager', None)
+                exec_ok = False
+                exec_out = ""
+
+                if atype == 'API_QUERY':
+                    exec_out = self._execute_api_query(
+                        {'type': atype, 'target': target, 'content': content})
+                    exec_ok = not exec_out.startswith("❌")
+                else:
+                    dispatch = self._ACTION_DISPATCH.get(atype)
+                    if dispatch:
+                        method_name, uses_content = dispatch
+                        method = getattr(self.ctx.executor, method_name)
+                        exec_ok, exec_out = (
+                            method(target, content) if uses_content
+                            else method(target)
+                        )
+
+                self.ctx.logger.log_event(
+                    "SESSION_ELEVATED_EXEC", AlertSeverity.INFO, {
+                        'action_type': atype, 'target': target[:200],
+                        'default_level': approval_level.value,
+                        'default_gate': gate.name,
+                        'elevated_level': effective_level.value,
+                        'session_id': elevation_session_id[:8],
+                        'success': exec_ok,
+                    })
+
+                # Record action use and check for failure circuit-breaker
+                if session_mgr:
+                    session_mgr.use_session_action(elevation_session_id)
+                    if not exec_ok:
+                        closed = session_mgr.record_failure(elevation_session_id)
+                        if closed:
+                            lines.append(
+                                "\n⚠️ **Session closed** — execution failure "
+                                "circuit-breaker triggered. Subsequent actions "
+                                "require full approval."
+                            )
+
+                lines.append(self._format_single_result(
+                    atype, target, exec_ok, exec_out))
+                continue
+
+            # If session elevation gave us a SOFTWARE-level result,
+            # use that instead of the original approval_level
+            if elevation_session_id is not None:
+                approval_level = effective_level
+                gate = approval_level.gate
+                # Recalculate hardware_tier
+                hardware_tier = 0
+                if gate == SecurityGate.PHYSICAL:
+                    hardware_tier = 4
+                elif gate == SecurityGate.BIOMETRIC:
+                    hardware_tier = 3
 
             # ----- SOFTWARE / BIOMETRIC / PHYSICAL gate: create approval -----
             taxonomy_dict = {
