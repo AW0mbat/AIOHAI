@@ -145,3 +145,35 @@ def integrity(config, mock_logger, mock_alerts):
 @pytest.fixture
 def approval_mgr(config, mock_logger, mock_alerts):
     return ApprovalManager(config, mock_logger)
+
+
+# ---------------------------------------------------------------------------
+# OPT-4: Shared startup config fixture (extracted from test_startup.py)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def startup_config(tmp_path):
+    """Build a UnifiedConfig for startup/integration tests.
+
+    Similar to `config` but with OS-assigned port and degraded security
+    mode enabled for testing.
+    """
+    for d in ('policy', 'logs', 'temp', 'data/ssl', 'data/fido2'):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+
+    policy = tmp_path / "policy" / "aiohai_security_policy_v3.0.md"
+    policy.write_text("# AIOHAI Policy v3.0\nDo not harm the user.\n")
+
+    cfg = UnifiedConfig()
+    cfg.base_dir = tmp_path
+    cfg.policy_file = policy
+    cfg.policy_signature_file = tmp_path / "policy" / "policy.sig"
+    cfg.log_dir = tmp_path / "logs"
+    cfg.secure_temp_dir = tmp_path / "temp"
+    cfg.listen_host = "127.0.0.1"
+    cfg.listen_port = 0  # OS-assigned port
+    cfg.hsm_enabled = False
+    cfg.hsm_required = False
+    cfg.fido2_enabled = False
+    cfg.allow_degraded_security = True
+    return cfg

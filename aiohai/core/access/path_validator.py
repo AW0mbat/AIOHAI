@@ -87,20 +87,30 @@ class PathValidator:
                 if pattern.search(resolved):
                     return True, resolved, "Tier 3 required"
 
-            # Symlink check (resolve and re-check both block lists)
+            # SEC-4 FIX: Cross-platform symlink check.
+            # On Windows with pywin32, use REPARSE_POINT attribute check.
+            # On all platforms, fall back to os.path.islink for basic detection.
+            symlink_target = None
             if IS_WINDOWS and _PYWIN32_AVAILABLE and os.path.exists(resolved):
                 try:
                     attrs = win32file.GetFileAttributes(resolved)
                     if attrs & 0x400:  # REPARSE_POINT
-                        target = os.path.realpath(resolved)
-                        for pattern in self.blocked_patterns:
-                            if pattern.search(target):
-                                return False, resolved, "Symlink target blocked"
-                        for pattern in self.tier3_patterns:
-                            if pattern.search(target):
-                                return True, resolved, "Tier 3 required"
+                        symlink_target = os.path.realpath(resolved)
                 except Exception:
-                    pass  # Attribute check failed, allow path through
+                    pass  # Attribute check failed
+            elif os.path.islink(path) or (os.path.exists(resolved) and
+                                          os.path.realpath(resolved) != resolved):
+                # Non-Windows or pywin32 not available: use os.path.islink
+                # Also catch cases where realpath differs from resolved
+                symlink_target = os.path.realpath(resolved)
+
+            if symlink_target and symlink_target != resolved:
+                for pattern in self.blocked_patterns:
+                    if pattern.search(symlink_target):
+                        return False, resolved, "Symlink target blocked"
+                for pattern in self.tier3_patterns:
+                    if pattern.search(symlink_target):
+                        return True, resolved, "Tier 3 required"
 
             return True, resolved, "OK"
         except Exception as e:

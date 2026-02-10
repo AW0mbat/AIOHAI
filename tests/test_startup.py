@@ -39,16 +39,18 @@ from aiohai.proxy.orchestrator import UnifiedSecureProxy
 # ---------------------------------------------------------------------------
 
 def make_config(tmp_path, **overrides) -> UnifiedConfig:
-    """Build a UnifiedConfig pointing at tmp_path with optional overrides."""
-    (tmp_path / "policy").mkdir(exist_ok=True)
-    (tmp_path / "logs").mkdir(exist_ok=True)
-    (tmp_path / "temp").mkdir(exist_ok=True)
-    (tmp_path / "data" / "ssl").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "data" / "fido2").mkdir(parents=True, exist_ok=True)
-    
+    """Build a UnifiedConfig with optional overrides.
+
+    OPT-4: For tests that need custom overrides, use this helper.
+    For standard startup tests, prefer the `startup_config` fixture
+    from conftest.py.
+    """
+    for d in ('policy', 'logs', 'temp', 'data/ssl', 'data/fido2'):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+
     policy = tmp_path / "policy" / "aiohai_security_policy_v3.0.md"
     policy.write_text("# AIOHAI Policy v3.0\nDo not harm the user.\n")
-    
+
     cfg = UnifiedConfig()
     cfg.base_dir = tmp_path
     cfg.policy_file = policy
@@ -56,15 +58,15 @@ def make_config(tmp_path, **overrides) -> UnifiedConfig:
     cfg.log_dir = tmp_path / "logs"
     cfg.secure_temp_dir = tmp_path / "temp"
     cfg.listen_host = "127.0.0.1"
-    cfg.listen_port = 0  # OS-assigned port to avoid conflicts
+    cfg.listen_port = 0
     cfg.hsm_enabled = False
     cfg.hsm_required = False
     cfg.fido2_enabled = False
-    cfg.allow_degraded_security = True  # Allow component-less startup in tests
-    
+    cfg.allow_degraded_security = True
+
     for k, v in overrides.items():
         setattr(cfg, k, v)
-    
+
     return cfg
 
 

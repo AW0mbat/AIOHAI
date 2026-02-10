@@ -375,10 +375,30 @@ class ConfigManager:
         """Restore configuration from a backup.
 
         Creates a pre-restore backup before applying.
+        Path containment: only backups within the expected backup directory
+        are accepted, preventing path traversal attacks.
         """
-        backup = Path(backup_path)
+        backup = Path(backup_path).resolve()
+
+        # SEC-1 FIX: Validate backup path is within the expected backup directory.
+        # Prevents an attacker from pointing to arbitrary directories.
+        try:
+            backup_dir_resolved = self._backup_dir.resolve()
+            if not str(backup).startswith(str(backup_dir_resolved) + os.sep) and \
+               backup != backup_dir_resolved:
+                logger.warning(
+                    "Backup restore rejected: path %s is outside backup directory %s",
+                    backup_path, backup_dir_resolved,
+                )
+                return {
+                    'success': False,
+                    'error': 'Backup path is outside the allowed backup directory',
+                }
+        except (OSError, ValueError) as e:
+            return {'success': False, 'error': f'Invalid backup path: path validation failed'}
+
         if not backup.exists() or not backup.is_dir():
-            return {'success': False, 'error': f'Backup not found: {backup_path}'}
+            return {'success': False, 'error': 'Backup not found'}
 
         # Create pre-restore backup
         pre_backup = self.create_backup(reason="pre-restore")

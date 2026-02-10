@@ -622,7 +622,7 @@ class UnifiedProxyHandler(BaseHTTPRequestHandler):
         )
         return "\n".join(lines)
 
-
+    def _execute_all_pending(self, skip_destructive: bool = False) -> str:
         """Execute all pending actions in sequence, optionally skipping destructive."""
         pending = self.ctx.approval_mgr.get_all_pending()
 

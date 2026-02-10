@@ -63,7 +63,12 @@ class AdminAPIServer:
                  matrix_adjuster=None,
                  fido2_server=None,
                  port: int = 11437,
-                 bind_address: str = '127.0.0.1'):
+                 bind_address: str = '127.0.0.1',
+                 allowed_origins: tuple = (
+                     'http://127.0.0.1:5173',  # Vite dev
+                     'http://127.0.0.1:11437',  # Production
+                     'app://.',                  # Electron
+                 )):
         """Initialize the admin API server.
 
         Args:
@@ -82,6 +87,7 @@ class AdminAPIServer:
         self._fido2_server = fido2_server
         self._port = port
         self._bind_address = bind_address
+        self._allowed_origins = allowed_origins
 
         # Generate API secret for this session
         self._api_secret = secrets.token_hex(32)
@@ -142,10 +148,21 @@ class AdminAPIServer:
                 provided = self.headers.get('X-Admin-Secret', '')
                 return hmac.compare_digest(provided, api_server._api_secret)
 
+            def _get_cors_origin(self) -> Optional[str]:
+                """Return the request Origin if it's in the allowed list."""
+                origin = self.headers.get('Origin', '')
+                if origin in api_server._allowed_origins:
+                    return origin
+                return None
+
             def _send_json(self, data: Dict, status: int = 200):
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
+                # SEC-2 FIX: Only allow known origins, not wildcard
+                cors_origin = self._get_cors_origin()
+                if cors_origin:
+                    self.send_header('Access-Control-Allow-Origin', cors_origin)
+                    self.send_header('Vary', 'Origin')
                 self.end_headers()
                 self.wfile.write(
                     json.dumps(data, default=str).encode('utf-8')
@@ -162,13 +179,19 @@ class AdminAPIServer:
                     body = self.rfile.read(content_length)
                     return json.loads(body)
                 except (json.JSONDecodeError, OSError) as e:
-                    self._send_json({'error': f'Invalid JSON: {e}'}, 400)
+                    # SEC-3 FIX: Don't leak internal error details to client
+                    logger.debug("Admin API JSON parse error: %s", e)
+                    self._send_json({'error': 'Invalid request body'}, 400)
                     return None
 
             def do_OPTIONS(self):
                 """CORS preflight."""
                 self.send_response(204)
-                self.send_header('Access-Control-Allow-Origin', '*')
+                # SEC-2 FIX: Only allow known origins
+                cors_origin = self._get_cors_origin()
+                if cors_origin:
+                    self.send_header('Access-Control-Allow-Origin', cors_origin)
+                    self.send_header('Vary', 'Origin')
                 self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Secret')
                 self.end_headers()
